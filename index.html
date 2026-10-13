@@ -149,6 +149,17 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .invite-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--panel); border: 2px solid var(--blue); border-radius: 16px; padding: 12px 14px; box-shadow: 0 12px 30px -18px var(--shadow); }
 .invite-banner span { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; }
 .games li .btn { flex: none; }
+.style-screen { display: grid; gap: 12px; padding-top: 2vh; }
+.style-preview { justify-self: center; }
+.swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.swatch { width: 100%; max-width: 52px; aspect-ratio: 1; justify-self: center; border-radius: 50%; border: 3px solid var(--panel); box-shadow: 0 0 0 1px var(--bezel), inset 0 -5px 10px rgba(0,0,0,0.2); cursor: pointer; }
+.swatch[aria-pressed="true"] { box-shadow: 0 0 0 3px var(--ink), inset 0 -5px 10px rgba(0,0,0,0.2); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
+.tile { display: grid; justify-items: center; gap: 2px; padding: 6px 4px 8px; border: 2px solid var(--bezel); border-radius: 14px; background: var(--board); color: var(--ink); font: 600 12px var(--font-body); cursor: pointer; }
+.tile[aria-pressed="true"] { border-color: var(--ink); background: var(--panel); }
+.ball-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.overlay .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.overlay .msg { margin: 0; font-weight: 700; font-size: 15px; text-wrap: balance; }
 .install h3 { margin: 4px 0 0; }
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
 .steps li { display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; font-size: 15px; }
@@ -172,6 +183,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
         <button id="mode-pvp" type="button" aria-pressed="false">2 Players</button>
         <button id="mode-online" type="button" aria-pressed="false">Online</button>
       </div>
+      <button id="my-ball" class="btn" type="button"><span class="ball-dot" id="my-ball-dot"></span>My ball</button>
       <button id="undo" class="btn" type="button">Undo</button>
       <button id="new" class="btn" type="button">New game</button>
     </div>
@@ -193,6 +205,23 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
         <button class="btn primary" type="submit">Start playing</button>
       </form>
       <p class="lobby-msg" id="name-msg" role="status"></p>
+    </div>
+  </section>
+
+  <section class="style-screen" id="style-screen" hidden>
+    <div class="lobby-card">
+      <h2>Style your ball</h2>
+      <canvas class="style-preview" id="style-preview" aria-label="Preview of your ball"></canvas>
+      <h3>Color</h3>
+      <div class="swatches" id="swatches"></div>
+      <h3>Face</h3>
+      <div class="tiles" id="faces"></div>
+      <h3>Hat</h3>
+      <div class="tiles" id="tops"></div>
+      <div class="coach-actions">
+        <button id="style-save" class="btn primary" type="button">Save</button>
+        <button id="style-cancel" class="btn" type="button">Cancel</button>
+      </div>
     </div>
   </section>
 
@@ -259,7 +288,11 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
       <div class="card">
         <div class="who" id="win-who">Blue wins</div>
         <div class="sub" id="win-sub">Reached the finish first.</div>
-        <div><button id="again" class="btn" type="button">Play again</button></div>
+        <p class="msg" id="rematch-msg" hidden></p>
+        <div class="actions">
+          <button id="again" class="btn primary" type="button">Play again</button>
+          <button id="leave-game" class="btn" type="button" hidden>Leave</button>
+        </div>
       </div>
     </div>
   </div>
@@ -273,7 +306,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 6</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 7</p>
 </div>
 
 <script>
@@ -455,6 +488,29 @@ if (!/^[a-z0-9]{8,16}$/.test(profile.id || "")) profile.id = Math.random().toStr
 profile.name = cleanName(profile.name);
 saveJSON("wallrush-profile", profile);
 const myId = () => profile.id;
+const PALETTE = {
+  blue: { name: "Blue", base: "#2f5fe0", hi: "#8fb0ff" },
+  red: { name: "Red", base: "#dc2f45", hi: "#ff9aa6" },
+  green: { name: "Green", base: "#1f9d55", hi: "#86e3a8" },
+  pink: { name: "Pink", base: "#e64a9c", hi: "#ffb3da" },
+  purple: { name: "Purple", base: "#7c4ddb", hi: "#c4adff" },
+  yellow: { name: "Yellow", base: "#e8b10e", hi: "#fff0a3" },
+  orange: { name: "Orange", base: "#f06a1d", hi: "#ffc08f" },
+  teal: { name: "Teal", base: "#0f9a95", hi: "#8ee8e2" },
+  sky: { name: "Sky", base: "#2aa3e0", hi: "#a8e1ff" },
+  brown: { name: "Brown", base: "#8a5a2e", hi: "#d9ae84", dark: true },
+  silver: { name: "Silver", base: "#8d97a8", hi: "#e6ebf3" },
+  black: { name: "Black", base: "#20232b", hi: "#6b7280", dark: true },
+};
+const FACES = { none: "None", smile: "Smile", grin: "Grin", wink: "Wink", cool: "Shades", shock: "Wow", stache: "Mustache" };
+const TOPS = { none: "None", party: "Party hat", crown: "Crown", tophat: "Top hat", bow: "Bow", ears: "Cat ears", cap: "Cap", halo: "Halo" };
+const validLook = (l, color) => ({
+  color: l && PALETTE[l.color] ? l.color : color,
+  face: l && FACES[l.face] ? l.face : "none",
+  top: l && TOPS[l.top] ? l.top : "none",
+});
+profile.look = validLook(profile.look, "blue");
+saveJSON("wallrush-profile", profile);
 let records = loadJSON("wallrush-records", {});
 const pairKey = (a, b) => [a, b].sort().join("-");
 const recTopic = key => `${T}/r/${key}`;
@@ -532,12 +588,13 @@ function connect() {
   online.client = c;
   c.subscribe(invTopic(online.me), { qos: 1 });
   c.on("connect", () => {
-    online.up = true;
+    online.up = true; online.upAt = Date.now();
     c.publish(presTopic(online.me), JSON.stringify({ online: true }), { qos: 1, retain: true });
     render();
   });
-  c.on("offline", () => { online.up = false; render(); });
-  c.on("close", () => { online.up = false; render(); });
+  // A late "close" from an abandoned attempt can arrive after a new connection opens, so ask the client.
+  c.on("offline", () => { online.up = c.connected; render(); });
+  c.on("close", () => { online.up = c.connected; render(); });
   c.on("error", () => {});
   c.on("message", (topic, buf) => {
     let msg; try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
@@ -592,7 +649,7 @@ function hostGame() {
   online.code = code; online.role = "blue"; online.invited = null;
   online.client.subscribe(stateTopic(code), { qos: 1 });
   state = freshState(); hover = null;
-  publishGame({ v: 4, code, seq: 1, round: 1, players: { blue: online.me, red: null }, names: { [online.me]: profile.name }, state, ts: Date.now() });
+  publishGame({ v: 4, code, seq: 1, round: 1, players: { blue: online.me, red: null }, names: { [online.me]: profile.name }, looks: { [online.me]: profile.look }, state, ts: Date.now() });
   setHash(code); lobbyMsg(""); render();
 }
 function joinGame(raw) {
@@ -604,14 +661,19 @@ function joinGame(raw) {
   online.code = code; online.role = null;
   state = freshState(); hover = null; setHash(code);
   online.client.subscribe(stateTopic(code), { qos: 1 });
-  online.joinTimer = setTimeout(() => {
-    if (online.code === code && !online.game) {
-      leaveGame(true);
-      lobbyMsg(`No game found with code ${code}. Check the code, or ask your friend to create a new game.`);
-      render();
-    }
-  }, 9000);
+  armJoinTimer(code);
   render();
+}
+// Only call a game missing after we've been connected for a few seconds without hearing about it.
+function armJoinTimer(code) {
+  clearTimeout(online.joinTimer);
+  online.joinTimer = setTimeout(() => {
+    if (online.code !== code || online.game) return;
+    if (!online.up || Date.now() - (online.upAt || 0) < 5000) { armJoinTimer(code); return; }
+    leaveGame(true);
+    lobbyMsg(`No game found with code ${code}. Check the code, or ask your friend to create a new game.`);
+    render();
+  }, 4000);
 }
 function onGame(g) {
   if (!validGame(g) || g.code !== online.code) return;
@@ -633,7 +695,7 @@ function onGame(g) {
   if (!online.role) claimSeat(false);
   else if (g.players[online.role] !== online.me) {
     if (g.players[online.role]) { leaveGame(true); lobbyMsg("Someone else took your place in that game."); }
-    else publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: online.me }, names: { ...g.names, [online.me]: profile.name }, ts: Date.now() });
+    else publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: online.me }, names: { ...g.names, [online.me]: profile.name }, looks: { ...g.looks, [online.me]: profile.look }, ts: Date.now() });
   }
   render();
 }
@@ -643,7 +705,7 @@ function claimSeat(final) {
   if (!g) return;
   const take = role => {
     online.role = role;
-    publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [role]: me }, names: { ...g.names, [me]: profile.name }, ts: Date.now() });
+    publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [role]: me }, names: { ...g.names, [me]: profile.name }, looks: { ...g.looks, [me]: profile.look }, ts: Date.now() });
     render();
   };
   if (g.players.blue === me) { online.role = "blue"; return; }
@@ -668,8 +730,26 @@ function rematch() {
   next.turn = state.winner ? other(state.winner) : "blue"; // whoever lost goes first
   state = next; hover = null; anim.blue = anim.red = anim.drop = null;
   const g = online.game;
-  publishGame({ ...g, seq: g.seq + 1, round: (g.round || 1) + 1, state: next, ts: Date.now() });
+  publishGame({ ...g, seq: g.seq + 1, round: (g.round || 1) + 1, rematch: null, state: next, ts: Date.now() });
   render();
+}
+// The current round's rematch request, if any: { by, round, declined }.
+function rematchState() {
+  const g = online.game, r = g && g.rematch;
+  return r && typeof r.by === "string" && r.round === (g.round || 1) ? r : null;
+}
+function requestRematch() {
+  const g = online.game, r = rematchState();
+  if (!g || !online.role) return;
+  if (r && r.by !== online.me && !r.declined) { rematch(); return; } // they asked first, so this accepts
+  if (r && r.by === online.me) return;
+  publishGame({ ...g, seq: g.seq + 1, rematch: { by: online.me, round: g.round || 1, declined: false }, ts: Date.now() });
+  render();
+}
+function leaveAfterGame() {
+  const g = online.game, r = rematchState();
+  if (g && r && r.by !== online.me && !r.declined) publishGame({ ...g, seq: g.seq + 1, rematch: { ...r, declined: true, declinedBy: online.me }, ts: Date.now() });
+  leaveGame();
 }
 // quiet: switching games, so keep the lobby message and don't redraw yet.
 function leaveGame(quiet) {
@@ -733,16 +813,89 @@ window.addEventListener("hashchange", () => {
   const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
   if (m && m[1].toUpperCase() !== online.code) { setMode("online"); joinGame(m[1]); }
 });
+// A connection whose first attempt fails can stop retrying on its own. If it has been down for
+// more than 10 seconds and isn't retrying, restart it. This also keeps the "connected" flag honest.
+setInterval(() => {
+  const c = online.client, was = online.up;
+  if (!c) return;
+  if (c.connected) { online.downSince = 0; online.up = true; if (!online.upAt) online.upAt = Date.now(); }
+  else {
+    online.up = false;
+    if (!online.downSince) online.downSince = Date.now();
+    else if (!c.reconnecting && Date.now() - online.downSince > 10000) { online.downSince = Date.now(); c.reconnect(); }
+  }
+  if (was !== online.up) render();
+}, 3000);
 // Phones pause background tabs. When the game comes back on screen, reconnect right away.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && online.client && !online.client.connected) online.client.reconnect();
 });
 
+/* ---------- ball looks ---------- */
+function rawSeatLook(p) {
+  if (mode === "online" && online.game) {
+    const id = online.game.players[p], looks = online.game.looks || {};
+    return validLook(id && looks[id], p === "blue" ? "blue" : "red");
+  }
+  return p === "blue" ? profile.look : validLook(null, "red"); // the CPU or the second local player
+}
+// If both players pick the same color, the red seat switches so the balls stay easy to tell apart.
+function seatLook(p) {
+  const look = rawSeatLook(p);
+  if (p === "red") {
+    const b = rawSeatLook("blue").color;
+    if (b === look.color) return { ...look, color: b === "red" ? "blue" : "red" };
+  }
+  return look;
+}
+const seatColor = p => PALETTE[seatLook(p).color];
+let draftLook = null;
+function showStyle() {
+  draftLook = { ...profile.look };
+  screen = "style";
+  renderStyle(); render();
+  window.scrollTo(0, 0);
+}
+function sizedCanvas(cv2, size) {
+  const dpr = window.devicePixelRatio || 1;
+  cv2.width = cv2.height = size * dpr; cv2.style.width = cv2.style.height = size + "px";
+  const g = cv2.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, size, size);
+  return g;
+}
+function renderStyle() {
+  drawBallOn(sizedCanvas($("style-preview"), 150), 75, 92, 40, draftLook);
+  $("swatches").replaceChildren(...Object.entries(PALETTE).map(([k, c]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "swatch"; b.style.background = c.base; b.title = c.name;
+    b.setAttribute("aria-label", c.name); b.setAttribute("aria-pressed", draftLook.color === k);
+    b.onclick = () => { draftLook.color = k; renderStyle(); };
+    return b;
+  }));
+  const tiles = (el, opts, key) => el.replaceChildren(...Object.entries(opts).map(([k, label]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "tile"; b.setAttribute("aria-pressed", draftLook[key] === k);
+    const pic = document.createElement("canvas");
+    drawBallOn(sizedCanvas(pic, 56), 28, 36, 14, { ...draftLook, [key]: k });
+    const t = document.createElement("span"); t.textContent = label;
+    b.append(pic, t);
+    b.onclick = () => { draftLook[key] = k; renderStyle(); };
+    return b;
+  }));
+  tiles($("faces"), FACES, "face");
+  tiles($("tops"), TOPS, "top");
+}
+function saveStyle() {
+  profile.look = validLook(draftLook, "blue"); saveJSON("wallrush-profile", profile);
+  const g = online.game;
+  if (mode === "online" && g && online.role) publishGame({ ...g, seq: g.seq + 1, looks: { ...g.looks, [online.me]: profile.look }, ts: Date.now() });
+  screen = "game"; render();
+}
+
 /* ---------- tutorial ---------- */
 let tut = null, lastAction = null, screen = "game", pendingCode = null;
 const coarse = () => matchMedia("(pointer: coarse)").matches;
 const TUT = [
-  { text: () => (pendingCode ? "Your friend invited you to a game. Here's a quick intro first. " : "") + "Race your blue ball to the green finish line at the top. First one there wins." },
+  { text: () => (pendingCode ? "Your friend invited you to a game. Here's a quick intro first. " : "") + "Race your ball to the green finish line at the top. First one there wins." },
   { text: () => "Your turn. Tap a glowing dot to step one square.", wait: "move" },
   { text: () => coarse() ? "You can also block your rival with a wall. Tap a line between two squares to preview a wall, then press Place wall at the bottom to build it." : "You can also block your rival with a wall. Click a line between two squares to build one.", wait: "wall" },
   { text: () => "Each turn, either move or build a wall. Walls cover 2 squares, can't overlap, and can't trap anyone completely. You get 10 per game.", last: true },
@@ -886,17 +1039,91 @@ function drawWall(w, color, hi, alpha = 1, scale = 1) {
   ctx.fillStyle = hi; ctx.fill();
   ctx.restore();
 }
-function drawBall(x, y, color, hi) {
-  const R = S * 0.3;
-  ctx.save();
-  ctx.shadowColor = colors.shadow; ctx.shadowBlur = S * 0.25; ctx.shadowOffsetY = S * 0.08;
-  const g = ctx.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.1, x, y, R);
-  g.addColorStop(0, hi); g.addColorStop(0.45, color); g.addColorStop(1, color);
-  ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill();
-  ctx.shadowColor = "transparent";
-  ctx.beginPath(); ctx.arc(x - R * 0.32, y - R * 0.38, R * 0.18, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.75)"; ctx.fill();
-  ctx.restore();
+// A ball with its color, face and hat, drawn on any canvas context g at (x, y) with radius R.
+function drawBallOn(g, x, y, R, look) {
+  const col = PALETTE[look.color] || PALETTE.blue;
+  g.save();
+  if (look.top === "ears") drawTop(g, x, y, R, look, col); // ears sit behind the ball
+  g.shadowColor = colors.shadow || "rgba(0,0,0,0.2)"; g.shadowBlur = R * 0.8; g.shadowOffsetY = R * 0.25;
+  const grad = g.createRadialGradient(x - R * 0.35, y - R * 0.4, R * 0.1, x, y, R);
+  grad.addColorStop(0, col.hi); grad.addColorStop(0.45, col.base); grad.addColorStop(1, col.base);
+  g.beginPath(); g.arc(x, y, R, 0, Math.PI * 2); g.fillStyle = grad; g.fill();
+  g.shadowColor = "transparent";
+  g.lineWidth = Math.max(1, R * 0.05); g.strokeStyle = "rgba(128,128,128,0.35)"; g.stroke();
+  g.beginPath(); g.arc(x - R * 0.42, y - R * 0.5, R * 0.14, 0, Math.PI * 2);
+  g.fillStyle = "rgba(255,255,255,0.7)"; g.fill();
+  drawFace(g, x, y, R, look.face, col);
+  if (look.top !== "ears") drawTop(g, x, y, R, look, col);
+  g.restore();
+}
+function drawFace(g, x, y, R, face, col) {
+  if (face === "none") return;
+  const ink = col.dark ? "#f4f6fb" : "#1d2433";
+  const dot = (dx, dy, r) => { g.beginPath(); g.arc(x + dx * R, y + dy * R, r * R, 0, Math.PI * 2); g.fill(); };
+  const arc = (dx, dy, r, a0, a1) => { g.beginPath(); g.arc(x + dx * R, y + dy * R, r * R, a0, a1); g.stroke(); };
+  const smile = () => arc(0, 0.02, 0.42, 0.2 * Math.PI, 0.8 * Math.PI);
+  g.fillStyle = ink; g.strokeStyle = ink; g.lineWidth = R * 0.1; g.lineCap = "round";
+  if (face === "smile") { dot(-0.32, -0.1, 0.1); dot(0.32, -0.1, 0.1); smile(); }
+  else if (face === "grin") {
+    arc(-0.32, -0.02, 0.13, 1.1 * Math.PI, 1.9 * Math.PI); arc(0.32, -0.02, 0.13, 1.1 * Math.PI, 1.9 * Math.PI);
+    g.beginPath(); g.arc(x, y + 0.16 * R, 0.38 * R, 0, Math.PI); g.closePath(); g.fill();
+  } else if (face === "wink") { dot(-0.32, -0.1, 0.1); arc(0.32, -0.04, 0.12, 1.1 * Math.PI, 1.9 * Math.PI); smile(); }
+  else if (face === "cool") {
+    g.fillStyle = "#111318"; g.strokeStyle = "#111318"; g.lineWidth = R * 0.08;
+    for (const sx of [-1, 1]) { g.beginPath(); g.roundRect(x + sx * 0.34 * R - 0.25 * R, y - 0.3 * R, 0.5 * R, 0.3 * R, 0.12 * R); g.fill(); }
+    g.beginPath(); g.moveTo(x - 0.12 * R, y - 0.2 * R); g.lineTo(x + 0.12 * R, y - 0.2 * R); g.stroke();
+    g.fillStyle = "rgba(255,255,255,0.5)"; g.fillRect(x - 0.5 * R, y - 0.25 * R, 0.12 * R, 0.06 * R); g.fillRect(x + 0.18 * R, y - 0.25 * R, 0.12 * R, 0.06 * R);
+    g.strokeStyle = ink; g.lineWidth = R * 0.1; arc(0, 0.12, 0.3, 0.25 * Math.PI, 0.75 * Math.PI);
+  } else if (face === "shock") {
+    dot(-0.32, -0.14, 0.11); dot(0.32, -0.14, 0.11);
+    g.lineWidth = R * 0.09; g.beginPath(); g.ellipse(x, y + 0.3 * R, 0.13 * R, 0.17 * R, 0, 0, Math.PI * 2); g.stroke();
+  } else if (face === "stache") {
+    dot(-0.32, -0.2, 0.1); dot(0.32, -0.2, 0.1);
+    g.fillStyle = col.dark ? "#f4f6fb" : "#3b2414";
+    for (const sx of [-1, 1]) { g.beginPath(); g.ellipse(x + sx * 0.2 * R, y + 0.14 * R, 0.24 * R, 0.11 * R, sx * 0.35, 0, Math.PI * 2); g.fill(); }
+  }
+}
+function drawTop(g, x, y, R, look, col) {
+  const top = look.top;
+  if (top === "none") return;
+  const P = (dx, dy) => [x + dx * R, y + dy * R];
+  const poly = (pts, fill) => { g.beginPath(); g.moveTo(...P(...pts[0])); for (const q of pts.slice(1)) g.lineTo(...P(...q)); g.closePath(); g.fillStyle = fill; g.fill(); };
+  const dot = (dx, dy, r, fill) => { g.beginPath(); g.arc(x + dx * R, y + dy * R, r * R, 0, Math.PI * 2); g.fillStyle = fill; g.fill(); };
+  if (top === "party") {
+    poly([[-0.42, -0.78], [0.42, -0.78], [0.05, -1.7]], "#ff5fa8");
+    g.save(); g.clip(); g.fillStyle = "#ffd23f";
+    g.fillRect(x - 0.6 * R, y - 1.1 * R, 1.2 * R, 0.14 * R); g.fillRect(x - 0.6 * R, y - 1.38 * R, 1.2 * R, 0.11 * R);
+    g.restore();
+    dot(0.05, -1.72, 0.14, "#ffd23f");
+  } else if (top === "crown") {
+    poly([[-0.5, -0.72], [-0.56, -1.38], [-0.26, -1.08], [0, -1.5], [0.26, -1.08], [0.56, -1.38], [0.5, -0.72]], "#f5c518");
+    g.strokeStyle = "#c9971a"; g.lineWidth = R * 0.05; g.stroke();
+    dot(0, -0.92, 0.09, "#e23b5b"); dot(-0.3, -0.9, 0.07, "#2f8fe0"); dot(0.3, -0.9, 0.07, "#2f8fe0");
+  } else if (top === "tophat") {
+    g.fillStyle = "#1b1d24";
+    g.beginPath(); g.ellipse(x, y - 0.8 * R, 0.72 * R, 0.14 * R, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.roundRect(x - 0.42 * R, y - 1.62 * R, 0.84 * R, 0.86 * R, 0.06 * R); g.fill();
+    g.fillStyle = "#dc2f45"; g.fillRect(x - 0.42 * R, y - 1.0 * R, 0.84 * R, 0.15 * R);
+  } else if (top === "bow") {
+    const bx = 0.42, by = -0.8;
+    poly([[bx, by], [bx - 0.42, by - 0.26], [bx - 0.42, by + 0.26]], "#ff6fb5");
+    poly([[bx, by], [bx + 0.42, by - 0.26], [bx + 0.42, by + 0.26]], "#ff6fb5");
+    dot(bx, by, 0.12, "#e0448f");
+  } else if (top === "ears") {
+    for (const sx of [-1, 1]) {
+      poly([[sx * 0.82, -0.5], [sx * 0.66, -1.28], [sx * 0.16, -0.9]], col.base);
+      poly([[sx * 0.68, -0.66], [sx * 0.6, -1.08], [sx * 0.34, -0.86]], "#ffb3cf");
+    }
+  } else if (top === "cap") {
+    const capCol = look.color === "red" ? "#2f5fe0" : "#dc2f45";
+    g.fillStyle = capCol;
+    g.beginPath(); g.arc(x, y - 0.55 * R, 0.66 * R, Math.PI, 0); g.closePath(); g.fill();
+    g.beginPath(); g.ellipse(x + 0.6 * R, y - 0.56 * R, 0.52 * R, 0.12 * R, 0, 0, Math.PI * 2); g.fill();
+    dot(0, -1.2, 0.08, "#ffffff");
+  } else if (top === "halo") {
+    g.strokeStyle = "#f5c518"; g.lineWidth = 0.14 * R;
+    g.beginPath(); g.ellipse(x, y - 1.32 * R, 0.55 * R, 0.17 * R, 0, 0, Math.PI * 2); g.stroke();
+  }
 }
 const ease = t => 1 - Math.pow(1 - t, 3);
 function ballXY(p, now) {
@@ -935,7 +1162,7 @@ function draw(now) {
       const x = PAD + (m.c + 0.5) * S, y = PAD + (m.r + 0.5) * S;
       const isHover = hover && hover.type === "cell" && hover.r === m.r && hover.c === m.c;
       ctx.beginPath(); ctx.arc(x, y, S * (isHover ? 0.2 : 0.11) * pulse, 0, Math.PI * 2);
-      ctx.fillStyle = colors[p]; ctx.globalAlpha = isHover ? 0.45 : 0.3; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = seatColor(p).base; ctx.globalAlpha = isHover ? 0.45 : 0.3; ctx.fill(); ctx.globalAlpha = 1;
     }
   }
   // walls
@@ -946,15 +1173,17 @@ function draw(now) {
       scale = 1.25 - 0.25 * ease(t);
       if (t >= 1) anim.drop = null;
     }
-    drawWall(w, colors[w.p], colors[w.p + "-hi"], 1, scale);
+    const wc = seatColor(w.p);
+    drawWall(w, wc.base, wc.hi, 1, scale);
   }
   // wall preview
   if (hover && hover.type === "wall" && humanTurn()) {
     const bad = wallProblem(state, hover.w);
-    drawWall(hover.w, bad ? colors.muted : colors[state.turn], colors[state.turn + "-hi"], bad ? 0.35 : 0.5);
+    const tc = seatColor(state.turn);
+    drawWall(hover.w, bad ? colors.muted : tc.base, tc.hi, bad ? 0.35 : 0.5);
   }
   // balls
-  for (const p of ["red", "blue"]) { const { x, y } = ballXY(p, now); drawBall(x, y, colors[p], colors[p + "-hi"]); }
+  for (const p of ["red", "blue"]) { const { x, y } = ballXY(p, now); drawBallOn(ctx, x, y, S * 0.3, seatLook(p)); }
   requestAnimationFrame(draw);
 }
 
@@ -1072,6 +1301,8 @@ function render() {
   const naming = screen !== "game", tutor = mode === "tutorial" && !naming;
   const on = mode === "online" && !naming, inGame = on && !!online.code;
   $("name-screen").hidden = screen !== "name";
+  $("style-screen").hidden = screen !== "style";
+  $("my-ball-dot").style.background = PALETTE[profile.look.color].base;
   $("invite").hidden = !invite || naming || mode === "tutorial";
   if (invite) $("invite-text").textContent = `${invite.name} invited you to a game.`;
   $("install").hidden = screen !== "install";
@@ -1092,7 +1323,9 @@ function render() {
   for (const p of ["blue", "red"]) {
     $("name-" + p).textContent = n[p];
     $("p-" + p).classList.toggle("active", !state.winner && state.turn === p);
-    $("pips-" + p).innerHTML = Array.from({ length: WALLS }, (_, i) => `<i class="${i < state.left[p] ? "on" : ""}"></i>`).join("");
+    const sc = seatColor(p).base;
+    $("p-" + p).querySelector(".dot").style.background = sc;
+    $("pips-" + p).innerHTML = Array.from({ length: WALLS }, (_, i) => i < state.left[p] ? `<i style="background:${sc}"></i>` : "<i></i>").join("");
     $("pips-" + p).title = `${state.left[p]} walls left`;
   }
   $("undo").disabled = history.length === 0;
@@ -1100,8 +1333,25 @@ function render() {
   if (state.winner) {
     const meWon = mode === "cpu" ? state.winner === "blue" : mode === "online" && state.winner === myColor();
     $("win-who").textContent = meWon ? "You win" : `${n[state.winner]} wins`;
-    $("again").textContent = mode === "online" ? "Rematch" : "Play again";
-    $("again").hidden = mode === "online" && !online.role;
+    if (mode === "online") {
+      const r = rematchState(), g = online.game;
+      const friendId = g && online.role ? g.players[other(online.role)] : null;
+      if (friendId) online.lastFriend = nameFor(friendId);
+      const otherId = friendId || (r && typeof r.declinedBy === "string" ? r.declinedBy : null);
+      const fname = otherId ? nameFor(otherId) : online.lastFriend || "Your friend";
+      let msg = "", label = "Rematch", showAgain = !!online.role;
+      if (r && r.declined && r.by === online.me) { msg = `${fname} doesn't want a rematch right now.`; showAgain = false; }
+      else if (!friendId) { msg = `${fname} left the game.`; showAgain = false; }
+      else if (r && !r.declined && r.by === online.me) { msg = `Rematch request sent. Waiting for ${fname}…`; showAgain = false; }
+      else if (r && !r.declined) { msg = `${fname} wants a rematch!`; label = "Play again"; }
+      $("rematch-msg").hidden = !msg; $("rematch-msg").textContent = msg;
+      $("again").textContent = label; $("again").hidden = !showAgain;
+      $("leave-game").hidden = false;
+    } else {
+      $("rematch-msg").hidden = true;
+      $("again").textContent = "Play again"; $("again").hidden = false;
+      $("leave-game").hidden = true;
+    }
     $("win-sub").textContent = mode === "online" && rv ? rv : `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
   }
   setStatus();
@@ -1161,7 +1411,11 @@ $("install-now").onclick = async () => {
 $("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTurn()) placeWall(hover.w); };
 $("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
-$("again").onclick = () => (mode === "online" ? rematch() : newGame());
+$("again").onclick = () => (mode === "online" ? requestRematch() : newGame());
+$("leave-game").onclick = leaveAfterGame;
+$("my-ball").onclick = showStyle;
+$("style-save").onclick = saveStyle;
+$("style-cancel").onclick = () => { screen = "game"; render(); };
 $("undo").onclick = () => {
   clearTimeout(cpuTimer);
   if (!history.length) return;
