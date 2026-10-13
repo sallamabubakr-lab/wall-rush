@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Wall Rush</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wall Rush">
+<meta name="theme-color" content="#eef1f6">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Manrope:wght@400;600;700&display=swap">
 <style>
 /* Layout: one centered column — header, the board in a soft bezel, a player bar beneath. */
@@ -138,6 +145,16 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .name-screen { display: grid; gap: 12px; padding-top: 8vh; }
 #name-input { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 16px; }
 .score { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+.install { display: grid; gap: 12px; padding-top: 4vh; }
+.install h3 { margin: 4px 0 0; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
+.steps li { display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; font-size: 15px; }
+.steps li::before {
+  counter-increment: step; content: counter(step); flex: none; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--ink); color: var(--bg); font: 700 13px var(--font-body); display: grid; place-items: center; margin-top: -1px;
+}
+.glyph { display: inline-block; width: 20px; height: 20px; vertical-align: -4px; margin: 0 2px; color: var(--blue); }
+.install-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); background: var(--board); border: 1px solid var(--bezel); border-radius: 12px; padding: 10px 12px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
@@ -167,6 +184,20 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
         <button class="btn primary" type="submit">Start playing</button>
       </form>
       <p class="lobby-msg" id="name-msg" role="status"></p>
+    </div>
+  </section>
+
+  <section class="install" id="install" hidden>
+    <div class="lobby-card">
+      <h2>Put Wall Rush on your home screen</h2>
+      <p class="lede">It opens full screen like an app, so starting a game is one tap away.</p>
+      <div><button id="install-now" class="btn primary" type="button" hidden>Install Wall Rush</button></div>
+      <div id="install-steps"></div>
+      <p class="install-note" id="install-note" hidden></p>
+      <div class="coach-actions">
+        <button id="install-done" class="btn primary" type="button">Done</button>
+        <button id="install-later" class="btn" type="button">Maybe later</button>
+      </div>
     </div>
   </section>
 
@@ -232,7 +263,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · Version 4</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 5</p>
 </div>
 
 <script>
@@ -636,7 +667,7 @@ function renderLobby() {
 async function copyLink() {
   const url = inviteLink(), btn = $("copy-link"), fb = $("link-fallback");
   if (navigator.share && matchMedia("(pointer: coarse)").matches) {
-    try { await navigator.share({ title: "Wall Rush", text: "Play Wall Rush with me", url }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    try { await navigator.share({ title: "Wall Rush", text: `Play Wall Rush with me! Game code: ${online.code}`, url }); return; } catch (e) { if (e && e.name === "AbortError") return; }
   }
   try {
     await navigator.clipboard.writeText(url);
@@ -710,6 +741,58 @@ function afterSetup() {
   if (code) { setMode("online"); joinGame(code); }
   else if (mode === "tutorial" || mode === "online" && !online.code) setMode(mode === "online" ? "online" : "cpu");
   else render();
+}
+
+/* ---------- add to home screen ---------- */
+const ua = navigator.userAgent;
+const isAndroid = /Android/.test(ua);
+const isIOS = !isAndroid && (/iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+const inAppBrowser = /Instagram|FBAN|FBAV|Line\/|Snapchat|TikTok/.test(ua);
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const offerInstall = () => (isIOS || isAndroid) && !isStandalone() && !loadJSON("wallrush-install-seen", false);
+let deferredInstall = null;
+window.addEventListener("beforeinstallprompt", ev => { ev.preventDefault(); deferredInstall = ev; if (screen === "install") renderInstall(); });
+const SHARE_ICON = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share button"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
+const DOTS_ICON = '<svg class="glyph" viewBox="0 0 24 24" fill="currentColor" aria-label="Menu button"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>';
+const STEPS = {
+  iosSafari: [
+    `Tap the Share button ${SHARE_ICON} in Safari. It's in the bar at the bottom of the screen. If you don't see it, tap the ••• button first.`,
+    "Scroll down and tap <strong>Add to Home Screen</strong>.",
+    "Tap <strong>Add</strong>. Wall Rush now has its own icon on your home screen.",
+  ],
+  iosChrome: [
+    `Tap the Share button ${SHARE_ICON} at the top right, next to the address bar.`,
+    "Tap <strong>Add to Home Screen</strong>.",
+    "Tap <strong>Add</strong>. Wall Rush now has its own icon on your home screen.",
+  ],
+  android: [
+    `Tap the menu button ${DOTS_ICON} at the top right of Chrome.`,
+    "Tap <strong>Add to Home screen</strong> or <strong>Install app</strong>.",
+    "Tap <strong>Install</strong> (or <strong>Add</strong>). Wall Rush now has its own icon on your home screen.",
+  ],
+};
+const stepList = items => "<ol class=\"steps\">" + items.map(t => `<li><span>${t}</span></li>`).join("") + "</ol>";
+function renderInstall() {
+  let html;
+  if (inAppBrowser) html = stepList(["Open this page in your phone's browser first: tap the ••• menu and choose <strong>Open in browser</strong> (or <strong>Open in Safari</strong>).", "Then come back to this guide from the link at the bottom of the page."]);
+  else if (isIOS) html = stepList(/CriOS/.test(ua) ? STEPS.iosChrome : STEPS.iosSafari);
+  else if (isAndroid) html = stepList(STEPS.android);
+  else html = "<p class=\"lede\">Open this page on your phone, then follow the steps.</p><h3>iPhone (Safari)</h3>" + stepList(STEPS.iosSafari) + "<h3>Android (Chrome)</h3>" + stepList(STEPS.android);
+  $("install-steps").innerHTML = html;
+  $("install-now").hidden = !deferredInstall;
+  const note = $("install-note");
+  note.hidden = !isIOS && isAndroid;
+  note.textContent = "On iPhone, the home screen app keeps its own name and record, separate from Safari. Set it up before you start a rivalry. When a friend sends you a link, open the app and type their game code instead.";
+}
+function showInstall() {
+  screen = "install";
+  renderInstall();
+  render();
+  window.scrollTo(0, 0);
+}
+function closeInstall() {
+  saveJSON("wallrush-install-seen", true);
+  afterSetup();
 }
 
 /* ---------- canvas ---------- */
@@ -931,9 +1014,10 @@ function setStatus(msg) {
   el.innerHTML = `<strong>${who}.</strong> ${touchHint}`;
 }
 function render() {
-  const naming = screen === "name", tutor = mode === "tutorial" && !naming;
+  const naming = screen !== "game", tutor = mode === "tutorial" && !naming;
   const on = mode === "online" && !naming, inGame = on && !!online.code;
-  $("name-screen").hidden = !naming;
+  $("name-screen").hidden = screen !== "name";
+  $("install").hidden = screen !== "install";
   $("coach").hidden = !tutor;
   if (tutor) renderCoach();
   document.querySelector(".controls").hidden = naming || tutor;
@@ -1001,8 +1085,19 @@ $("name-form").addEventListener("submit", ev => {
   profile.name = n; saveJSON("wallrush-profile", profile);
   const g = online.game;
   if (g && online.role) publishGame({ ...g, seq: g.seq + 1, names: { ...g.names, [online.me]: n }, ts: Date.now() });
+  if (!pendingCode && offerInstall()) { showInstall(); return; }
   afterSetup();
 });
+$("add-home").onclick = showInstall;
+$("install-done").onclick = closeInstall;
+$("install-later").onclick = closeInstall;
+$("install-now").onclick = async () => {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  try { await deferredInstall.userChoice; } catch (e) {}
+  deferredInstall = null;
+  closeInstall();
+};
 $("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTurn()) placeWall(hover.w); };
 $("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
