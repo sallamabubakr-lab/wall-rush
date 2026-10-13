@@ -120,10 +120,16 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .gamebar .code strong { color: var(--ink); font-family: var(--font-display); letter-spacing: 0.12em; margin-left: 4px; }
 .gamebar-actions { display: flex; gap: 8px; }
 .link-fallback { flex-basis: 100%; border: 1px solid var(--bezel); background: var(--board); color: var(--ink); border-radius: 10px; padding: 7px 10px; font: 12px var(--font-body); }
-.wall-confirm { display: flex; justify-content: center; gap: 8px; }
+.wall-confirm {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; justify-content: center; gap: 10px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--panel); border-top: 1px solid var(--bezel);
+  box-shadow: 0 -8px 24px -12px var(--shadow);
+}
+.wall-confirm .btn { font-size: 15px; padding: 12px 22px; }
+.version { margin: 0; text-align: center; color: var(--muted); font-size: 11px; opacity: 0.7; padding-bottom: 64px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -187,6 +193,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
+  <p class="version">Version 3</p>
 </div>
 
 <script>
@@ -337,15 +344,29 @@ function scheduleCpu() {
 }
 function humanTurn() {
   if (state.winner) return false;
-  if (mode === "online") return online.connected && state.turn === online.role;
+  if (mode === "online") {
+    const g = online.game;
+    return !!(g && online.role && g.players.blue && g.players.red && state.turn === online.role);
+  }
   return mode === "pvp" || state.turn === "blue";
 }
 
-/* ---------- online (peer to peer) ---------- */
-// The two browsers connect directly. PeerJS's free public server only introduces them.
-const PEER_PREFIX = "wallrush-v1-";
-const online = { peer: null, conn: null, code: null, role: null, connected: false, seq: 0, lost: false, retries: 0 };
+/* ---------- online ---------- */
+// Both players talk through a free public message server. It keeps the latest game state,
+// so a phone that locks its screen or switches apps catches up when it comes back.
+const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+const T = "wallrush/v3";
+const stateTopic = code => `${T}/g/${code}/state`;
+const presTopic = id => `${T}/p/${id}`;
+const online = { client: null, up: false, me: null, code: null, role: null, game: null, presence: {}, watching: new Set(), joinTimer: null, claimTimer: null };
 const myColor = () => online.role;
+function myId() {
+  try {
+    let id = sessionStorage.getItem("wallrush-id");
+    if (!id) { id = Math.random().toString(36).slice(2, 12); sessionStorage.setItem("wallrush-id", id); }
+    return id;
+  } catch (e) { return online.me || Math.random().toString(36).slice(2, 12); }
+}
 function lobbyMsg(text) { $("lobby-msg").textContent = text || ""; }
 function genCode() {
   const A = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -361,131 +382,140 @@ function validState(x) {
     x.walls.every(w => w && (w.o === "h" || w.o === "v") && Number.isInteger(w.r) && Number.isInteger(w.c) && (w.p === "blue" || w.p === "red")) &&
     x.left && (x.turn === "blue" || x.turn === "red") && (x.winner === null || x.winner === "blue" || x.winner === "red"));
 }
-function saveHost() {
-  if (online.role !== "blue") return;
-  try { sessionStorage.setItem("wallrush-host", JSON.stringify({ code: online.code, state, seq: online.seq })); } catch (e) {}
-}
-function loadHost() {
-  try { return JSON.parse(sessionStorage.getItem("wallrush-host") || "null"); } catch (e) { return null; }
-}
-function teardown() {
-  try { online.conn && online.conn.close(); } catch (e) {}
-  try { online.peer && online.peer.destroy(); } catch (e) {}
-  Object.assign(online, { peer: null, conn: null, code: null, role: null, connected: false, seq: 0, lost: false });
-}
-function peerError(err) {
-  const t = err && err.type;
-  teardown(); setHash(""); state = freshState();
-  if (t === "browser-incompatible") lobbyMsg("This browser can't do online play. Try Chrome, Safari, or Firefox.");
-  else if (t === "network" || t === "server-error" || t === "socket-error" || t === "socket-closed")
-    lobbyMsg("Couldn't reach the game server. Check your internet connection and try again.");
-  else lobbyMsg("Something went wrong while connecting. Try again.");
-  render();
-}
-function send(msg) { try { if (online.conn && online.conn.open) online.conn.send(msg); } catch (e) {} }
-function sendState() { send({ type: "state", state, seq: online.seq }); }
+const validGame = g => !!(g && g.v === 3 && typeof g.code === "string" && Number.isInteger(g.seq) && g.players && validState(g.state));
 
-function hostGame(code, saved) {
-  if (!window.Peer) { lobbyMsg("Online play couldn't load. Check your connection and reload the page."); return; }
-  if (!code) { teardown(); online.retries = 0; }
-  else { try { online.peer && online.peer.destroy(); } catch (e) {} }
-  const c = code || genCode();
-  lobbyMsg("Setting up your game…");
-  const peer = new Peer(PEER_PREFIX + c);
-  online.peer = peer;
-  peer.on("open", () => {
-    online.code = c; online.role = "blue"; online.lost = false;
-    if (saved && validState(saved.state)) { state = saved.state; online.seq = saved.seq || 0; }
-    else { state = freshState(); online.seq = 0; }
-    hover = null; setHash(c); lobbyMsg(""); saveHost(); render();
+function connect() {
+  if (online.client) return true;
+  if (!window.mqtt) { lobbyMsg("Online play couldn't load. Check your connection and reload the page."); return false; }
+  online.me = myId();
+  const c = mqtt.connect(BROKER, {
+    clientId: "wr_" + online.me + "_" + Math.random().toString(36).slice(2, 6),
+    keepalive: 20, reconnectPeriod: 1500, connectTimeout: 10000, clean: true,
+    will: { topic: presTopic(online.me), payload: JSON.stringify({ online: false }), qos: 1, retain: true },
   });
-  peer.on("connection", conn => {
-    if (online.conn && online.conn.open) {
-      conn.on("open", () => { conn.send({ type: "full" }); setTimeout(() => conn.close(), 400); });
-      return;
-    }
-    attach(conn);
+  online.client = c;
+  c.on("connect", () => {
+    online.up = true;
+    c.publish(presTopic(online.me), JSON.stringify({ online: true }), { qos: 1, retain: true });
+    render();
   });
-  peer.on("disconnected", () => { try { if (!peer.destroyed) peer.reconnect(); } catch (e) {} });
-  peer.on("error", err => {
-    if (err.type === "unavailable-id") {
-      // After a reload the old code can stay reserved for a few seconds.
-      if (code && online.retries++ < 6) { setTimeout(() => hostGame(code, saved), 2000); return; }
-      hostGame(); return;
-    }
-    if (err.type === "peer-unavailable") return;
-    peerError(err);
+  c.on("offline", () => { online.up = false; render(); });
+  c.on("close", () => { online.up = false; render(); });
+  c.on("error", () => {});
+  c.on("message", (topic, buf) => {
+    let msg; try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
+    if (online.code && topic === stateTopic(online.code)) onGame(msg);
+    else if (topic.startsWith(T + "/p/")) { online.presence[topic.slice(T.length + 3)] = !!(msg && msg.online); render(); }
   });
+  return true;
+}
+function publishGame(g) {
+  online.game = g;
+  if (online.client) online.client.publish(stateTopic(g.code), JSON.stringify(g), { qos: 1, retain: true });
+}
+function watchPresence(g) {
+  for (const id of [g.players.blue, g.players.red])
+    if (id && id !== online.me && !online.watching.has(id)) { online.watching.add(id); online.client.subscribe(presTopic(id), { qos: 1 }); }
+}
+function hostGame() {
+  if (!connect()) return;
+  leaveGame(true);
+  const code = genCode();
+  online.code = code; online.role = "blue";
+  online.client.subscribe(stateTopic(code), { qos: 1 });
+  state = freshState(); hover = null;
+  publishGame({ v: 3, code, seq: 1, players: { blue: online.me, red: null }, state, ts: Date.now() });
+  setHash(code); lobbyMsg(""); render();
 }
 function joinGame(raw) {
   const code = String(raw || "").trim().toUpperCase();
   lobbyMsg("");
   if (!/^[A-Z0-9]{5}$/.test(code)) { lobbyMsg("Game codes are 5 letters and numbers."); return; }
-  if (!window.Peer) { lobbyMsg("Online play couldn't load. Check your connection and reload the page."); return; }
-  teardown();
-  online.code = code; online.role = "red";
-  state = freshState(); hover = null; setHash(code); render();
-  const peer = new Peer();
-  online.peer = peer;
-  peer.on("open", () => attach(peer.connect(PEER_PREFIX + code, { reliable: true })));
-  peer.on("error", err => {
-    if (err.type === "peer-unavailable") {
-      teardown(); setHash(""); state = freshState();
+  if (!connect()) return;
+  leaveGame(true);
+  online.code = code; online.role = null;
+  state = freshState(); hover = null; setHash(code);
+  online.client.subscribe(stateTopic(code), { qos: 1 });
+  online.joinTimer = setTimeout(() => {
+    if (online.code === code && !online.game) {
+      leaveGame(true);
       lobbyMsg(`No game found with code ${code}. Check the code, or ask your friend to create a new game.`);
-      render(); return;
+      render();
     }
-    peerError(err);
-  });
+  }, 9000);
+  render();
 }
-function attach(conn) {
-  online.conn = conn;
-  conn.on("open", () => {
-    online.connected = true; online.lost = false;
-    online.role === "blue" ? sendState() : send({ type: "hello" });
-    render();
-  });
-  conn.on("data", onData);
-  conn.on("close", () => { if (online.conn === conn) { online.connected = false; online.lost = true; online.conn = null; render(); } });
-  conn.on("error", () => {});
-}
-function onData(msg) {
-  if (!msg || typeof msg !== "object") return;
-  if (msg.type === "full") {
-    teardown(); setHash(""); state = freshState();
-    lobbyMsg("That game already has two players. Create your own game instead.");
-    render(); return;
+function onGame(g) {
+  if (!validGame(g) || g.code !== online.code) return;
+  if (online.game && g.seq < online.game.seq) return;
+  clearTimeout(online.joinTimer);
+  const prev = state, next = clone(g.state), now = performance.now();
+  if (online.game) {
+    for (const p of ["blue", "red"])
+      if (prev.pos[p].r !== next.pos[p].r || prev.pos[p].c !== next.pos[p].c) anim[p] = { from: { ...prev.pos[p] }, t0: now };
+    const known = new Set(prev.walls.map(wallKey));
+    const added = next.walls.find(w => !known.has(wallKey(w)));
+    if (added) anim.drop = { key: wallKey(added), t0: now };
   }
-  if (msg.type === "hello" && online.role === "blue") { sendState(); return; }
-  if (msg.type !== "state" || !validState(msg.state) || typeof msg.seq !== "number" || msg.seq < online.seq) return;
-  const prev = state, next = clone(msg.state), now = performance.now();
-  for (const p of ["blue", "red"])
-    if (prev.pos[p].r !== next.pos[p].r || prev.pos[p].c !== next.pos[p].c) anim[p] = { from: { ...prev.pos[p] }, t0: now };
-  const known = new Set(prev.walls.map(wallKey));
-  const added = next.walls.find(w => !known.has(wallKey(w)));
-  if (added) anim.drop = { key: wallKey(added), t0: now };
-  state = next; online.seq = msg.seq; hover = null;
-  saveHost(); render();
+  online.game = g; state = next;
+  if (hover && hover.type === "wall" && !humanTurn()) hover = null;
+  watchPresence(g);
+  if (!online.role) claimSeat(false);
+  else if (g.players[online.role] !== online.me) {
+    if (g.players[online.role]) { leaveGame(true); lobbyMsg("Someone else took your place in that game."); }
+    else publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: online.me }, ts: Date.now() });
+  }
+  render();
+}
+// Take a seat: your own, an empty one, or one whose player has gone offline.
+function claimSeat(final) {
+  const g = online.game, me = online.me;
+  if (!g) return;
+  const take = role => {
+    online.role = role;
+    publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [role]: me }, ts: Date.now() });
+    render();
+  };
+  if (g.players.blue === me) { online.role = "blue"; return; }
+  if (g.players.red === me) { online.role = "red"; return; }
+  if (!g.players.red) return take("red");
+  const away = id => online.presence[id] === false || (final && online.presence[id] === undefined);
+  if (away(g.players.red)) return take("red");
+  if (away(g.players.blue)) return take("blue");
+  if (!final) { clearTimeout(online.claimTimer); online.claimTimer = setTimeout(() => { if (!online.role) claimSeat(true); }, 2500); return; }
+  leaveGame(true);
+  lobbyMsg("That game already has two players. Create your own game instead.");
+  render();
 }
 function pushOnline(next) {
-  online.seq++;
-  saveHost();
-  sendState();
+  const g = online.game;
+  if (!g) return;
+  publishGame({ ...g, seq: g.seq + 1, state: next, ts: Date.now() });
 }
 function rematch() {
-  if (!online.connected) return;
+  if (!online.game) return;
   const next = freshState();
   next.turn = state.winner ? other(state.winner) : "blue"; // whoever lost goes first
   state = next; hover = null; anim.blue = anim.red = anim.drop = null;
   pushOnline(next); render();
 }
-function leaveGame() {
-  teardown(); setHash("");
-  try { sessionStorage.removeItem("wallrush-host"); } catch (e) {}
+// quiet: switching games, so keep the lobby message and don't redraw yet.
+function leaveGame(quiet) {
+  clearTimeout(online.joinTimer); clearTimeout(online.claimTimer);
+  const g = online.game, code = online.code;
+  if (online.client && code) {
+    if (g && online.role && g.players[online.role] === online.me)
+      publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: null }, ts: Date.now() });
+    online.client.unsubscribe(stateTopic(code));
+  }
+  online.code = null; online.role = null; online.game = null;
+  if (quiet === true) return;
+  setHash("");
   state = freshState(); hover = null;
   render();
 }
 function renderLobby() {
-  const ok = !!window.Peer;
+  const ok = !!window.mqtt;
   $("create").disabled = !ok;
   if (!ok) $("lobby-note").textContent = "Online play couldn't load. Check your connection and reload the page.";
 }
@@ -505,14 +535,16 @@ async function copyLink() {
 function initOnline() {
   const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
   if (!m) return;
-  const code = m[1].toUpperCase(), saved = loadHost();
   setMode("online");
-  if (saved && saved.code === code) hostGame(code, saved); // the host reloaded the page
-  else joinGame(code);
+  joinGame(m[1]); // also how the host gets back in after a reload: their seat is kept
 }
 window.addEventListener("hashchange", () => {
   const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
   if (m && m[1].toUpperCase() !== online.code) { setMode("online"); joinGame(m[1]); }
+});
+// Phones pause background tabs. When the game comes back on screen, reconnect right away.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && online.client && !online.client.connected) online.client.reconnect();
 });
 
 /* ---------- canvas ---------- */
@@ -690,8 +722,9 @@ const $ = id => document.getElementById(id);
 function names() {
   if (mode === "cpu") return { blue: "You", red: "CPU" };
   if (mode === "online") {
-    const me = online.role;
-    return { blue: me === "blue" ? "You" : "Friend", red: me === "red" ? "You" : online.connected ? "Friend" : "Waiting…" };
+    const me = online.role, g = online.game;
+    const seat = p => me === p ? "You" : g && g.players[p] ? "Friend" : "Waiting…";
+    return { blue: seat("blue"), red: seat("red") };
   }
   return { blue: "Blue", red: "Red" };
 }
@@ -710,11 +743,12 @@ function setStatus(msg) {
   }
   if (msg) { el.textContent = msg; return; }
   if (mode === "online") {
-    const my = online.role;
-    if (!online.connected && my === "blue" && online.lost) el.textContent = "Your friend disconnected. They can open the invite link again to rejoin.";
-    else if (!online.connected && my === "blue") el.textContent = "Waiting for your friend. Send them the invite link, or tell them the code above.";
-    else if (!online.connected && online.lost) el.textContent = "Lost the connection. Reload the page to reconnect.";
-    else if (!online.connected) el.textContent = "Connecting to your friend's game…";
+    const my = online.role, g = online.game;
+    const friend = g && my ? g.players[other(my)] : null;
+    if (!online.up) el.textContent = "Connecting…";
+    else if (!g || !my) el.textContent = "Joining the game…";
+    else if (!friend) el.textContent = "Waiting for your friend. Send them the invite link, or tell them the code above.";
+    else if (online.presence[friend] === false && state.turn !== my) el.textContent = "Your friend's screen is off or they switched apps. The game continues when they come back.";
     else if (state.turn !== my) el.textContent = "Waiting for your friend to move…";
     else {
       el.textContent = "";
@@ -752,7 +786,7 @@ function render() {
     const meWon = mode === "cpu" ? state.winner === "blue" : mode === "online" && state.winner === myColor();
     $("win-who").textContent = meWon ? "You win" : `${n[state.winner]} wins`;
     $("again").textContent = mode === "online" ? "Rematch" : "Play again";
-    $("again").hidden = mode === "online" && !online.connected;
+    $("again").hidden = mode === "online" && !online.role;
     $("win-sub").textContent = `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
   }
   setStatus();
