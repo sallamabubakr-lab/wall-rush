@@ -146,6 +146,9 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 #name-input { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 16px; }
 .score { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
 .install { display: grid; gap: 12px; padding-top: 4vh; }
+.invite-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--panel); border: 2px solid var(--blue); border-radius: 16px; padding: 12px 14px; box-shadow: 0 12px 30px -18px var(--shadow); }
+.invite-banner span { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; }
+.games li .btn { flex: none; }
 .install h3 { margin: 4px 0 0; }
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
 .steps li { display: flex; gap: 12px; align-items: flex-start; line-height: 1.5; font-size: 15px; }
@@ -173,6 +176,12 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
       <button id="new" class="btn" type="button">New game</button>
     </div>
   </header>
+
+  <div class="invite-banner" id="invite" role="status" hidden>
+    <span id="invite-text"></span>
+    <button id="invite-join" class="btn primary" type="button">Join</button>
+    <button id="invite-dismiss" class="btn" type="button">Not now</button>
+  </div>
 
   <section class="name-screen" id="name-screen" hidden>
     <div class="lobby-card">
@@ -222,6 +231,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
           <input id="join-code" placeholder="Game code" maxlength="5" autocomplete="off" spellcheck="false">
           <button class="btn" type="submit">Join</button>
         </form>
+        <button id="paste-invite" class="btn" type="button" hidden>Paste invite</button>
       </div>
       <p class="lobby-msg" id="lobby-msg" role="status"></p>
     </div>
@@ -263,7 +273,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 5</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 6</p>
 </div>
 
 <script>
@@ -432,7 +442,8 @@ const BROKER = "wss://broker.hivemq.com:8884/mqtt";
 const T = "wallrush/v4";
 const stateTopic = code => `${T}/g/${code}/state`;
 const presTopic = id => `${T}/p/${id}`;
-const online = { client: null, up: false, me: null, code: null, role: null, game: null, presence: {}, watching: new Set(), joinTimer: null, claimTimer: null };
+const invTopic = id => `${T}/inv/${id}`;
+const online = { invited: null, client: null, up: false, me: null, code: null, role: null, game: null, presence: {}, watching: new Set(), joinTimer: null, claimTimer: null };
 const myColor = () => online.role;
 
 /* ---------- profile and rivalry records (saved in this browser) ---------- */
@@ -519,6 +530,7 @@ function connect() {
     will: { topic: presTopic(online.me), payload: JSON.stringify({ online: false }), qos: 1, retain: true },
   });
   online.client = c;
+  c.subscribe(invTopic(online.me), { qos: 1 });
   c.on("connect", () => {
     online.up = true;
     c.publish(presTopic(online.me), JSON.stringify({ online: true }), { qos: 1, retain: true });
@@ -529,11 +541,40 @@ function connect() {
   c.on("error", () => {});
   c.on("message", (topic, buf) => {
     let msg; try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
-    if (online.code && topic === stateTopic(online.code)) onGame(msg);
+    if (topic === invTopic(online.me)) onInvite(msg);
+    else if (online.code && topic === stateTopic(online.code)) onGame(msg);
     else if (topic.startsWith(T + "/p/")) { online.presence[topic.slice(T.length + 3)] = !!(msg && msg.online); render(); }
     else if (topic.startsWith(T + "/r/")) onRecord(topic.slice(T.length + 3), msg);
   });
   return true;
+}
+// Invites go straight to a rival's app, so they can join without a link or a code.
+let invite = null;
+function onInvite(msg) {
+  if (!msg || typeof msg.from !== "string" || msg.from === online.me || !/^[A-Z0-9]{5}$/.test(msg.code || "")) return;
+  if (Date.now() - (Number(msg.ts) || 0) > 30 * 60 * 1000 || online.code === msg.code) return;
+  invite = { code: msg.code, name: cleanName(msg.fromName) || "A friend" };
+  render();
+}
+function clearInvite() {
+  invite = null;
+  if (online.client) online.client.publish(invTopic(online.me), "", { qos: 1, retain: true });
+  render();
+}
+function inviteRival(id, name) {
+  setMode("online");
+  hostGame();
+  if (!online.code) return;
+  online.client.publish(invTopic(id), JSON.stringify({ from: online.me, fromName: profile.name, code: online.code, ts: Date.now() }), { qos: 1, retain: true });
+  online.invited = name;
+  render();
+}
+async function pasteInvite() {
+  let text = "";
+  try { text = await navigator.clipboard.readText(); } catch (e) {}
+  const m = /#([A-Za-z0-9]{5})\b/.exec(text) || /^\s*([A-Za-z0-9]{5})\s*$/.exec(text) || /code:\s*([A-Za-z0-9]{5})\b/i.exec(text);
+  if (m) joinGame(m[1]);
+  else lobbyMsg("Couldn't find a game link on your clipboard. Copy the invite link first, or type the code.");
 }
 function publishGame(g) {
   online.game = g;
@@ -548,7 +589,7 @@ function hostGame() {
   if (!connect()) return;
   leaveGame(true);
   const code = genCode();
-  online.code = code; online.role = "blue";
+  online.code = code; online.role = "blue"; online.invited = null;
   online.client.subscribe(stateTopic(code), { qos: 1 });
   state = freshState(); hover = null;
   publishGame({ v: 4, code, seq: 1, round: 1, players: { blue: online.me, red: null }, names: { [online.me]: profile.name }, state, ts: Date.now() });
@@ -576,6 +617,7 @@ function onGame(g) {
   if (!validGame(g) || g.code !== online.code) return;
   if (online.game && g.seq < online.game.seq) return;
   clearTimeout(online.joinTimer);
+  if (invite && invite.code === g.code) clearInvite();
   const prev = state, next = clone(g.state), now = performance.now();
   if (online.game) {
     for (const p of ["blue", "red"])
@@ -649,7 +691,7 @@ function renderLobby() {
   const me = profile.id;
   const list = Object.values(records).filter(r => r.ids && r.ids.includes(me)).map(r => {
     const them = r.ids.find(i => i !== me);
-    return { name: r.names[them] || "Friend", ...tally(r, me) };
+    return { id: them, name: r.names[them] || "Friend", ...tally(r, me) };
   }).filter(x => x.mine + x.theirs > 0).sort((a, b) => (b.mine + b.theirs) - (a.mine + a.theirs)).slice(0, 8);
   $("rivals-card").hidden = !list.length;
   $("rivals").replaceChildren(...list.map(x => {
@@ -657,10 +699,14 @@ function renderLobby() {
     const who = document.createElement("span"); who.className = "who"; who.textContent = x.name;
     const sc = document.createElement("span"); sc.className = "score";
     sc.textContent = `You ${x.mine} – ${x.theirs}`;
-    li.append(who, sc);
+    const inv = document.createElement("button"); inv.className = "btn"; inv.type = "button"; inv.textContent = "Invite";
+    inv.onclick = () => inviteRival(x.id, x.name);
+    const info = document.createElement("div"); info.className = "info"; info.append(who, sc);
+    li.append(info, inv);
     return li;
   }));
   const ok = !!window.mqtt;
+  $("paste-invite").hidden = !(navigator.clipboard && navigator.clipboard.readText);
   $("create").disabled = !ok;
   if (!ok) $("lobby-note").textContent = "Online play couldn't load. Check your connection and reload the page.";
 }
@@ -698,7 +744,7 @@ const coarse = () => matchMedia("(pointer: coarse)").matches;
 const TUT = [
   { text: () => (pendingCode ? "Your friend invited you to a game. Here's a quick intro first. " : "") + "Race your blue ball to the green finish line at the top. First one there wins." },
   { text: () => "Your turn. Tap a glowing dot to step one square.", wait: "move" },
-  { text: () => coarse() ? "You can also block your rival with a wall. Tap a line between two squares to preview a wall, then tap it again to build it." : "You can also block your rival with a wall. Click a line between two squares to build one.", wait: "wall" },
+  { text: () => coarse() ? "You can also block your rival with a wall. Tap a line between two squares to preview a wall, then press Place wall at the bottom to build it." : "You can also block your rival with a wall. Click a line between two squares to build one.", wait: "wall" },
   { text: () => "Each turn, either move or build a wall. Walls cover 2 squares, can't overlap, and can't trap anyone completely. You get 10 per game.", last: true },
 ];
 function startTutorial() {
@@ -737,6 +783,7 @@ function showNameScreen() {
 // After the tutorial and name: go to the invited game if there is one, otherwise the CPU.
 function afterSetup() {
   screen = "game";
+  if (profile.name) connect();
   const code = pendingCode; pendingCode = null;
   if (code) { setMode("online"); joinGame(code); }
   else if (mode === "tutorial" || mode === "online" && !online.code) setMode(mode === "online" ? "online" : "cpu");
@@ -935,22 +982,29 @@ cv.addEventListener("pointerdown", ev => {
   if (!humanTurn()) return;
   const h = hit(ev);
   if (!h) return;
-  const touch = ev.pointerType !== "mouse";
-  // On touch, the first tap previews a wall; a second tap on the preview (or the Place wall button) builds it.
-  if (touch && hover && hover.type === "wall" && nearWall(ev, hover.w)) { placeWall(hover.w); return; }
+  if (ev.pointerType !== "mouse") {
+    // On touch, a tap on a square you can move to is a move unless it lands right on a line.
+    // A line tap only previews a wall; the Place wall button builds it. Any other tap cancels.
+    const c = cellAt(ev);
+    const canMove = c && legalMoves(state, state.turn).some(m => m.r === c.r && m.c === c.c);
+    if (canMove && (h.type === "cell" || c.edge > 0.12)) { doMove({ r: c.r, c: c.c }); return; }
+    if (h.type === "wall") { hover = { ...h, touch: true }; setStatus(wallProblem(state, h.w)); return; }
+    hover = null; setStatus(); return;
+  }
   if (h.type === "cell") {
     const ok = legalMoves(state, state.turn).some(m => m.r === h.r && m.c === h.c);
     if (ok) doMove({ r: h.r, c: h.c }); else { hover = null; setStatus(); }
     return;
   }
-  if (touch) { hover = { ...h, touch: true }; setStatus(wallProblem(state, h.w)); return; }
   placeWall(h.w);
 });
-function nearWall(ev, w) {
+// The square under the pointer, and how close the pointer is to that square's edge (in squares).
+function cellAt(ev) {
   const rect = cv.getBoundingClientRect();
   const fx = (ev.clientX - rect.left - PAD) / S, fy = (ev.clientY - rect.top - PAD) / S;
-  if (w.o === "h") return fx > w.c - 0.15 && fx < w.c + 2.15 && Math.abs(fy - w.r) < 0.38;
-  return fy > w.r - 0.15 && fy < w.r + 2.15 && Math.abs(fx - w.c) < 0.38;
+  if (fx < 0 || fy < 0 || fx >= COLS || fy >= ROWS) return null;
+  const r = Math.floor(fy), c = Math.floor(fx);
+  return { r, c, edge: Math.min(fx - c, c + 1 - fx, fy - r, r + 1 - fy) };
 }
 function placeWall(w) {
   const problem = wallProblem(state, w);
@@ -997,19 +1051,20 @@ function setStatus(msg) {
     const friend = g && my ? g.players[other(my)] : null;
     if (!online.up) el.textContent = "Connecting…";
     else if (!g || !my) el.textContent = "Joining the game…";
+    else if (!friend && online.invited) el.textContent = `Invite sent to ${online.invited}. It pops up when they open Wall Rush. You can also send them the link.`;
     else if (!friend) el.textContent = "Waiting for your friend. Send them the invite link, or tell them the code above.";
     else if (online.presence[friend] === false && state.turn !== my) el.textContent = "Your friend's screen is off or they switched apps. The game continues when they come back.";
     else if (state.turn !== my) el.textContent = `Waiting for ${nameFor(friend)} to move…`;
     else {
       el.textContent = "";
       const b = document.createElement("strong"); b.textContent = "Your move.";
-      el.append(b, hover && hover.type === "wall" ? " Tap the wall again, or press Place wall." : " Step one square, or drop a wall on a grid line to block.");
+      el.append(b, hover && hover.type === "wall" ? " Press Place wall to build it, or tap anywhere else to cancel." : " Step one square, or drop a wall on a grid line to block.");
     }
     return;
   }
   if (mode === "cpu" && state.turn === "red") { el.textContent = "CPU is thinking…"; return; }
   const who = mode === "cpu" ? "Your move" : `${n[state.turn]}'s move`;
-  const touchHint = hover && hover.type === "wall" ? "Tap the wall again, or press Place wall." :
+  const touchHint = hover && hover.type === "wall" ? "Press Place wall to build it, or tap anywhere else to cancel." :
     "Step one square, or drop a wall on a grid line to block.";
   el.innerHTML = `<strong>${who}.</strong> ${touchHint}`;
 }
@@ -1017,6 +1072,8 @@ function render() {
   const naming = screen !== "game", tutor = mode === "tutorial" && !naming;
   const on = mode === "online" && !naming, inGame = on && !!online.code;
   $("name-screen").hidden = screen !== "name";
+  $("invite").hidden = !invite || naming || mode === "tutorial";
+  if (invite) $("invite-text").textContent = `${invite.name} invited you to a game.`;
   $("install").hidden = screen !== "install";
   $("coach").hidden = !tutor;
   if (tutor) renderCoach();
@@ -1089,6 +1146,9 @@ $("name-form").addEventListener("submit", ev => {
   afterSetup();
 });
 $("add-home").onclick = showInstall;
+$("paste-invite").onclick = pasteInvite;
+$("invite-dismiss").onclick = clearInvite;
+$("invite-join").onclick = () => { if (!invite) return; const c = invite.code; clearInvite(); setMode("online"); joinGame(c); };
 $("install-done").onclick = closeInstall;
 $("install-later").onclick = closeInstall;
 $("install-now").onclick = async () => {
@@ -1126,7 +1186,7 @@ function start(data) {
   const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
   if (!loadJSON("wallrush-tutorial", false)) { pendingCode = m && m[1].toUpperCase(); startTutorial(); }
   else if (!profile.name) { pendingCode = m && m[1].toUpperCase(); showNameScreen(); }
-  else initOnline();
+  else { connect(); initOnline(); }
 }
 start({});
 </script>
