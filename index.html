@@ -126,7 +126,18 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
   box-shadow: 0 -8px 24px -12px var(--shadow);
 }
 .wall-confirm .btn { font-size: 15px; padding: 12px 22px; }
-.version { margin: 0; text-align: center; color: var(--muted); font-size: 11px; opacity: 0.7; padding-bottom: 64px; }
+.version { margin: 0; text-align: center; color: var(--muted); font-size: 11px; padding-bottom: 64px; }
+.link { border: 0; background: none; padding: 0; font: inherit; color: var(--blue); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.me-line { margin: 0; color: var(--muted); }
+.me-line strong { color: var(--ink); }
+.coach { background: var(--panel); border: 1px solid var(--bezel); border-radius: 18px; padding: 16px 18px; display: grid; gap: 10px; box-shadow: 0 12px 30px -18px var(--shadow); }
+.coach-step { font: 700 11px var(--font-body); letter-spacing: 0.18em; text-transform: uppercase; color: var(--finish); }
+.coach-text { margin: 0; font-size: 15px; line-height: 1.5; text-wrap: pretty; }
+.coach-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rivalry { text-align: center; font-weight: 700; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--bezel); border-radius: 999px; padding: 6px 14px; align-self: center; }
+.name-screen { display: grid; gap: 12px; padding-top: 8vh; }
+#name-input { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 16px; }
+.score { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
@@ -146,8 +157,31 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     </div>
   </header>
 
+  <section class="name-screen" id="name-screen" hidden>
+    <div class="lobby-card">
+      <h2>What should rivals call you?</h2>
+      <p class="lede">Your name and your head-to-head records are saved in this browser, so they're still here next time you open the game.</p>
+      <form id="name-form" class="join">
+        <label for="name-input" class="sr">Your name</label>
+        <input id="name-input" maxlength="16" placeholder="Your name" autocomplete="nickname">
+        <button class="btn primary" type="submit">Start playing</button>
+      </form>
+      <p class="lobby-msg" id="name-msg" role="status"></p>
+    </div>
+  </section>
+
+  <section class="coach" id="coach" hidden>
+    <div class="coach-step" id="coach-step">How to play · 1 of 4</div>
+    <p class="coach-text" id="coach-text"></p>
+    <div class="coach-actions">
+      <button id="coach-next" class="btn primary" type="button">Next</button>
+      <button id="coach-skip" class="btn" type="button">Skip tutorial</button>
+    </div>
+  </section>
+
   <section class="lobby" id="lobby" hidden>
     <div class="lobby-card">
+      <p class="me-line">Playing as <strong id="me-name"></strong> · <button class="link" id="edit-name" type="button">Change name</button></p>
       <h2>Play someone online</h2>
       <p class="lede" id="lobby-note">Create a game and send the link to a friend. They just open it and they're in. No sign-up needed.</p>
       <div class="lobby-actions">
@@ -160,6 +194,10 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
       </div>
       <p class="lobby-msg" id="lobby-msg" role="status"></p>
     </div>
+    <div class="lobby-card" id="rivals-card" hidden>
+      <h3>Your rivalries</h3>
+      <ul class="games" id="rivals"></ul>
+    </div>
   </section>
 
   <div class="gamebar" id="gamebar" hidden>
@@ -170,6 +208,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     </div>
     <input id="link-fallback" class="link-fallback" readonly hidden aria-label="Invite link">
   </div>
+  <div class="rivalry" id="rivalry" hidden></div>
 
   <div class="finish-label" id="finish-label"><span class="flag" aria-hidden="true"></span>Finish</div>
 
@@ -193,7 +232,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
-  <p class="version">Version 3</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · Version 4</p>
 </div>
 
 <script>
@@ -282,7 +321,8 @@ function legalMoves(s, p) {
 /* ---------- actions ---------- */
 function commit(next) {
   if (!next.winner) next.turn = other(state.turn);
-  if (mode === "online") { state = next; hover = null; render(); pushOnline(next); return; }
+  if (mode === "tutorial") { next.turn = "blue"; next.winner = null; state = next; hover = null; render(); tutorialEvent(); return; }
+  if (mode === "online") { state = next; hover = null; pushOnline(next); render(); return; }
   history.push(state);
   state = next;
   hover = null;
@@ -290,6 +330,7 @@ function commit(next) {
   scheduleCpu();
 }
 function doMove(to) {
+  lastAction = "move";
   const p = state.turn, next = clone(state);
   anim[p] = { from: { ...state.pos[p] }, t0: performance.now() };
   next.pos[p] = to;
@@ -297,6 +338,7 @@ function doMove(to) {
   commit(next);
 }
 function doWall(w) {
+  lastAction = "wall";
   const next = clone(state);
   next.walls.push({ ...w, p: state.turn });
   next.left[state.turn]--;
@@ -343,7 +385,8 @@ function scheduleCpu() {
   }, 520);
 }
 function humanTurn() {
-  if (state.winner) return false;
+  if (state.winner || screen !== "game") return false;
+  if (mode === "tutorial") return !!(tut && TUT[tut.step].wait) && state.turn === "blue";
   if (mode === "online") {
     const g = online.game;
     return !!(g && online.role && g.players.blue && g.players.red && state.turn === online.role);
@@ -355,17 +398,69 @@ function humanTurn() {
 // Both players talk through a free public message server. It keeps the latest game state,
 // so a phone that locks its screen or switches apps catches up when it comes back.
 const BROKER = "wss://broker.hivemq.com:8884/mqtt";
-const T = "wallrush/v3";
+const T = "wallrush/v4";
 const stateTopic = code => `${T}/g/${code}/state`;
 const presTopic = id => `${T}/p/${id}`;
 const online = { client: null, up: false, me: null, code: null, role: null, game: null, presence: {}, watching: new Set(), joinTimer: null, claimTimer: null };
 const myColor = () => online.role;
-function myId() {
-  try {
-    let id = sessionStorage.getItem("wallrush-id");
-    if (!id) { id = Math.random().toString(36).slice(2, 12); sessionStorage.setItem("wallrush-id", id); }
-    return id;
-  } catch (e) { return online.me || Math.random().toString(36).slice(2, 12); }
+
+/* ---------- profile and rivalry records (saved in this browser) ---------- */
+function loadJSON(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } }
+function saveJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+const cleanName = n => String(n || "").replace(/\s+/g, " ").trim().slice(0, 16);
+const profile = loadJSON("wallrush-profile", null) || {};
+if (!/^[a-z0-9]{8,16}$/.test(profile.id || "")) profile.id = Math.random().toString(36).slice(2, 12).padEnd(10, "0");
+profile.name = cleanName(profile.name);
+saveJSON("wallrush-profile", profile);
+const myId = () => profile.id;
+let records = loadJSON("wallrush-records", {});
+const pairKey = (a, b) => [a, b].sort().join("-");
+const recTopic = key => `${T}/r/${key}`;
+function tally(rec, me) {
+  let mine = 0, theirs = 0;
+  for (const w of Object.values((rec && rec.results) || {})) w === me ? mine++ : theirs++;
+  return { mine, theirs };
+}
+// Results are keyed by game, so merging copies from both players never double counts.
+function mergeRecord(key, inc) {
+  const ids = key.split("-");
+  const cur = records[key] || { ids, names: {}, results: {} };
+  let changed = !records[key];
+  for (const [k, w] of Object.entries(inc.results || {}))
+    if (!(k in cur.results) && ids.includes(w) && /^[A-Z0-9]{5}-\d{1,4}$/.test(k)) { cur.results[k] = w; changed = true; }
+  for (const [id, n] of Object.entries(inc.names || {}))
+    if (ids.includes(id) && cleanName(n) && cur.names[id] !== cleanName(n)) { cur.names[id] = cleanName(n); changed = true; }
+  records[key] = cur;
+  if (changed) saveJSON("wallrush-records", records);
+  return changed;
+}
+function shareRecord(key) {
+  if (online.client && records[key]) online.client.publish(recTopic(key), JSON.stringify(records[key]), { qos: 1, retain: true });
+}
+const watchingRec = new Set();
+function syncRecord(g) {
+  const a = g.players.blue, b = g.players.red, me = online.me;
+  if (!a || !b || (a !== me && b !== me)) return;
+  const key = pairKey(a, b);
+  const results = g.state.winner ? { [`${g.code}-${g.round || 1}`]: g.players[g.state.winner] } : {};
+  if (mergeRecord(key, { names: g.names || {}, results }) && g.state.winner) shareRecord(key);
+  if (online.client && !watchingRec.has(key)) { watchingRec.add(key); online.client.subscribe(recTopic(key), { qos: 1 }); }
+}
+function onRecord(key, msg) {
+  if (!msg || typeof msg.results !== "object" || !key.split("-").includes(online.me)) return;
+  mergeRecord(key, msg);
+  const local = Object.keys(records[key].results), remote = Object.keys(msg.results);
+  if (local.some(k => !remote.includes(k))) shareRecord(key); // fill in the server copy
+  render();
+}
+const nameFor = id => id === online.me ? "You" : cleanName(online.game && online.game.names && online.game.names[id]) || "Friend";
+function rivalryText() {
+  const g = online.game;
+  if (!g || !online.role) return "";
+  const them = g.players[other(online.role)];
+  if (!them) return "";
+  const { mine, theirs } = tally(records[pairKey(online.me, them)], online.me);
+  return mine + theirs ? `Head to head: You ${mine} – ${theirs} ${nameFor(them)}` : `First game against ${nameFor(them)}. Good luck!`;
 }
 function lobbyMsg(text) { $("lobby-msg").textContent = text || ""; }
 function genCode() {
@@ -382,12 +477,11 @@ function validState(x) {
     x.walls.every(w => w && (w.o === "h" || w.o === "v") && Number.isInteger(w.r) && Number.isInteger(w.c) && (w.p === "blue" || w.p === "red")) &&
     x.left && (x.turn === "blue" || x.turn === "red") && (x.winner === null || x.winner === "blue" || x.winner === "red"));
 }
-const validGame = g => !!(g && g.v === 3 && typeof g.code === "string" && Number.isInteger(g.seq) && g.players && validState(g.state));
+const validGame = g => !!(g && g.v === 4 && typeof g.code === "string" && Number.isInteger(g.seq) && g.players && validState(g.state));
 
 function connect() {
   if (online.client) return true;
   if (!window.mqtt) { lobbyMsg("Online play couldn't load. Check your connection and reload the page."); return false; }
-  online.me = myId();
   const c = mqtt.connect(BROKER, {
     clientId: "wr_" + online.me + "_" + Math.random().toString(36).slice(2, 6),
     keepalive: 20, reconnectPeriod: 1500, connectTimeout: 10000, clean: true,
@@ -406,12 +500,14 @@ function connect() {
     let msg; try { msg = JSON.parse(buf.toString()); } catch (e) { return; }
     if (online.code && topic === stateTopic(online.code)) onGame(msg);
     else if (topic.startsWith(T + "/p/")) { online.presence[topic.slice(T.length + 3)] = !!(msg && msg.online); render(); }
+    else if (topic.startsWith(T + "/r/")) onRecord(topic.slice(T.length + 3), msg);
   });
   return true;
 }
 function publishGame(g) {
   online.game = g;
   if (online.client) online.client.publish(stateTopic(g.code), JSON.stringify(g), { qos: 1, retain: true });
+  syncRecord(g);
 }
 function watchPresence(g) {
   for (const id of [g.players.blue, g.players.red])
@@ -424,7 +520,7 @@ function hostGame() {
   online.code = code; online.role = "blue";
   online.client.subscribe(stateTopic(code), { qos: 1 });
   state = freshState(); hover = null;
-  publishGame({ v: 3, code, seq: 1, players: { blue: online.me, red: null }, state, ts: Date.now() });
+  publishGame({ v: 4, code, seq: 1, round: 1, players: { blue: online.me, red: null }, names: { [online.me]: profile.name }, state, ts: Date.now() });
   setHash(code); lobbyMsg(""); render();
 }
 function joinGame(raw) {
@@ -460,10 +556,11 @@ function onGame(g) {
   online.game = g; state = next;
   if (hover && hover.type === "wall" && !humanTurn()) hover = null;
   watchPresence(g);
+  syncRecord(g);
   if (!online.role) claimSeat(false);
   else if (g.players[online.role] !== online.me) {
     if (g.players[online.role]) { leaveGame(true); lobbyMsg("Someone else took your place in that game."); }
-    else publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: online.me }, ts: Date.now() });
+    else publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: online.me }, names: { ...g.names, [online.me]: profile.name }, ts: Date.now() });
   }
   render();
 }
@@ -473,7 +570,7 @@ function claimSeat(final) {
   if (!g) return;
   const take = role => {
     online.role = role;
-    publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [role]: me }, ts: Date.now() });
+    publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [role]: me }, names: { ...g.names, [me]: profile.name }, ts: Date.now() });
     render();
   };
   if (g.players.blue === me) { online.role = "blue"; return; }
@@ -497,7 +594,9 @@ function rematch() {
   const next = freshState();
   next.turn = state.winner ? other(state.winner) : "blue"; // whoever lost goes first
   state = next; hover = null; anim.blue = anim.red = anim.drop = null;
-  pushOnline(next); render();
+  const g = online.game;
+  publishGame({ ...g, seq: g.seq + 1, round: (g.round || 1) + 1, state: next, ts: Date.now() });
+  render();
 }
 // quiet: switching games, so keep the lobby message and don't redraw yet.
 function leaveGame(quiet) {
@@ -515,6 +614,21 @@ function leaveGame(quiet) {
   render();
 }
 function renderLobby() {
+  $("me-name").textContent = profile.name;
+  const me = profile.id;
+  const list = Object.values(records).filter(r => r.ids && r.ids.includes(me)).map(r => {
+    const them = r.ids.find(i => i !== me);
+    return { name: r.names[them] || "Friend", ...tally(r, me) };
+  }).filter(x => x.mine + x.theirs > 0).sort((a, b) => (b.mine + b.theirs) - (a.mine + a.theirs)).slice(0, 8);
+  $("rivals-card").hidden = !list.length;
+  $("rivals").replaceChildren(...list.map(x => {
+    const li = document.createElement("li");
+    const who = document.createElement("span"); who.className = "who"; who.textContent = x.name;
+    const sc = document.createElement("span"); sc.className = "score";
+    sc.textContent = `You ${x.mine} – ${x.theirs}`;
+    li.append(who, sc);
+    return li;
+  }));
   const ok = !!window.mqtt;
   $("create").disabled = !ok;
   if (!ok) $("lobby-note").textContent = "Online play couldn't load. Check your connection and reload the page.";
@@ -546,6 +660,57 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && online.client && !online.client.connected) online.client.reconnect();
 });
+
+/* ---------- tutorial ---------- */
+let tut = null, lastAction = null, screen = "game", pendingCode = null;
+const coarse = () => matchMedia("(pointer: coarse)").matches;
+const TUT = [
+  { text: () => (pendingCode ? "Your friend invited you to a game. Here's a quick intro first. " : "") + "Race your blue ball to the green finish line at the top. First one there wins." },
+  { text: () => "Your turn. Tap a glowing dot to step one square.", wait: "move" },
+  { text: () => coarse() ? "You can also block your rival with a wall. Tap a line between two squares to preview a wall, then tap it again to build it." : "You can also block your rival with a wall. Click a line between two squares to build one.", wait: "wall" },
+  { text: () => "Each turn, either move or build a wall. Walls cover 2 squares, can't overlap, and can't trap anyone completely. You get 10 per game.", last: true },
+];
+function startTutorial() {
+  if (online.code) leaveGame(true);
+  clearTimeout(cpuTimer);
+  mode = "tutorial"; screen = "game"; tut = { step: 0 };
+  state = freshState(); history = []; hover = null; anim.blue = anim.red = anim.drop = null;
+  for (const k of ["cpu", "pvp", "online"]) $("mode-" + k).setAttribute("aria-pressed", "false");
+  render();
+}
+function tutorialEvent() {
+  const step = tut && TUT[tut.step];
+  if (step && step.wait === lastAction) setTimeout(() => { if (tut) { tut.step++; render(); } }, 450);
+}
+function finishTutorial() {
+  saveJSON("wallrush-tutorial", true);
+  tut = null;
+  if (!profile.name) { showNameScreen(); return; }
+  afterSetup();
+}
+function renderCoach() {
+  const step = TUT[tut.step];
+  $("coach-step").textContent = `How to play · ${tut.step + 1} of ${TUT.length}`;
+  $("coach-text").textContent = step.text();
+  $("coach-next").hidden = !!step.wait;
+  $("coach-next").textContent = step.last ? "Got it" : "Next";
+  $("coach-skip").hidden = !!step.last;
+}
+function showNameScreen() {
+  screen = "name";
+  $("name-input").value = profile.name;
+  $("name-msg").textContent = "";
+  render();
+  setTimeout(() => { try { $("name-input").focus(); } catch (e) {} }, 50);
+}
+// After the tutorial and name: go to the invited game if there is one, otherwise the CPU.
+function afterSetup() {
+  screen = "game";
+  const code = pendingCode; pendingCode = null;
+  if (code) { setMode("online"); joinGame(code); }
+  else if (mode === "tutorial" || mode === "online" && !online.code) setMode(mode === "online" ? "online" : "cpu");
+  else render();
+}
 
 /* ---------- canvas ---------- */
 const cv = document.getElementById("board"), ctx = cv.getContext("2d");
@@ -721,10 +886,11 @@ window.addEventListener("keydown", ev => {
 const $ = id => document.getElementById(id);
 function names() {
   if (mode === "cpu") return { blue: "You", red: "CPU" };
+  if (mode === "tutorial") return { blue: "You", red: "Rival" };
   if (mode === "online") {
     const me = online.role, g = online.game;
     const seat = p => me === p ? "You" : g && g.players[p] ? "Friend" : "Waiting…";
-    return { blue: seat("blue"), red: seat("red") };
+    return { blue: g && g.players.blue ? nameFor(g.players.blue) : seat("blue"), red: g && g.players.red ? nameFor(g.players.red) : seat("red") };
   }
   return { blue: "Blue", red: "Red" };
 }
@@ -732,7 +898,7 @@ function setStatus(msg) {
   const n = names(), el = $("status");
   $("wall-confirm").hidden = !(hover && hover.touch && hover.type === "wall" && humanTurn());
   if (state.winner && mode === "online") {
-    el.textContent = state.winner === online.role ? "You crossed the finish line first." : "Your friend crossed the finish line first.";
+    el.textContent = state.winner === online.role ? "You crossed the finish line first." : `${nameFor(online.game.players[state.winner])} crossed the finish line first.`;
     return;
   }
   if (state.winner) {
@@ -742,6 +908,7 @@ function setStatus(msg) {
     return;
   }
   if (msg) { el.textContent = msg; return; }
+  if (mode === "tutorial") { el.textContent = ""; return; }
   if (mode === "online") {
     const my = online.role, g = online.game;
     const friend = g && my ? g.players[other(my)] : null;
@@ -749,7 +916,7 @@ function setStatus(msg) {
     else if (!g || !my) el.textContent = "Joining the game…";
     else if (!friend) el.textContent = "Waiting for your friend. Send them the invite link, or tell them the code above.";
     else if (online.presence[friend] === false && state.turn !== my) el.textContent = "Your friend's screen is off or they switched apps. The game continues when they come back.";
-    else if (state.turn !== my) el.textContent = "Waiting for your friend to move…";
+    else if (state.turn !== my) el.textContent = `Waiting for ${nameFor(friend)} to move…`;
     else {
       el.textContent = "";
       const b = document.createElement("strong"); b.textContent = "Your move.";
@@ -764,11 +931,18 @@ function setStatus(msg) {
   el.innerHTML = `<strong>${who}.</strong> ${touchHint}`;
 }
 function render() {
-  const on = mode === "online", inGame = on && !!online.code;
+  const naming = screen === "name", tutor = mode === "tutorial" && !naming;
+  const on = mode === "online" && !naming, inGame = on && !!online.code;
+  $("name-screen").hidden = !naming;
+  $("coach").hidden = !tutor;
+  if (tutor) renderCoach();
+  document.querySelector(".controls").hidden = naming || tutor;
   $("lobby").hidden = !on || inGame;
   $("gamebar").hidden = !inGame;
-  for (const id of ["finish-label", "bezel", "status"]) $(id).hidden = on && !inGame;
-  document.querySelector(".players").hidden = on && !inGame;
+  const rv = inGame ? rivalryText() : "";
+  $("rivalry").hidden = !rv; $("rivalry").textContent = rv;
+  for (const id of ["finish-label", "bezel", "status"]) $(id).hidden = naming || (on && !inGame);
+  document.querySelector(".players").hidden = naming || (on && !inGame);
   $("undo").hidden = $("new").hidden = on;
   if (inGame) $("game-code").textContent = online.code;
   if (!inGame) $("link-fallback").hidden = true;
@@ -787,7 +961,7 @@ function render() {
     $("win-who").textContent = meWon ? "You win" : `${n[state.winner]} wins`;
     $("again").textContent = mode === "online" ? "Rematch" : "Play again";
     $("again").hidden = mode === "online" && !online.role;
-    $("win-sub").textContent = `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
+    $("win-sub").textContent = mode === "online" && rv ? rv : `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
   }
   setStatus();
 }
@@ -797,6 +971,7 @@ function newGame() {
   render();
 }
 function setMode(m) {
+  tut = null; screen = "game";
   if (mode === "online" && m !== "online" && online.code) leaveGame();
   if (m === "online" && mode === "online") { render(); return; }
   mode = m;
@@ -815,6 +990,19 @@ $("create").onclick = () => hostGame();
 $("join-form").addEventListener("submit", ev => { ev.preventDefault(); joinGame($("join-code").value); });
 $("copy-link").onclick = copyLink;
 $("leave").onclick = leaveGame;
+$("coach-next").onclick = () => { if (!tut) return; if (TUT[tut.step].last) finishTutorial(); else { tut.step++; render(); } };
+$("coach-skip").onclick = finishTutorial;
+$("how-to").onclick = startTutorial;
+$("edit-name").onclick = showNameScreen;
+$("name-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const n = cleanName($("name-input").value);
+  if (!n) { $("name-msg").textContent = "Type a name first."; return; }
+  profile.name = n; saveJSON("wallrush-profile", profile);
+  const g = online.game;
+  if (g && online.role) publishGame({ ...g, seq: g.seq + 1, names: { ...g.names, [online.me]: n }, ts: Date.now() });
+  afterSetup();
+});
 $("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTurn()) placeWall(hover.w); };
 $("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
@@ -837,9 +1025,13 @@ function start(data) {
   if (data && data.state && data.mode !== "online") { mode = data.mode; state = data.state; history = data.history || []; }
   else { state = freshState(); history = []; }
   for (const k of ["cpu", "pvp", "online"]) $("mode-" + k).setAttribute("aria-pressed", mode === k);
+  online.me = profile.id;
   readColors(); resize(); render(); scheduleCpu();
   requestAnimationFrame(draw);
-  initOnline();
+  const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
+  if (!loadJSON("wallrush-tutorial", false)) { pendingCode = m && m[1].toUpperCase(); startTutorial(); }
+  else if (!profile.name) { pendingCode = m && m[1].toUpperCase(); showNameScreen(); }
+  else initOnline();
 }
 start({});
 </script>
