@@ -120,6 +120,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .gamebar .code strong { color: var(--ink); font-family: var(--font-display); letter-spacing: 0.12em; margin-left: 4px; }
 .gamebar-actions { display: flex; gap: 8px; }
 .link-fallback { flex-basis: 100%; border: 1px solid var(--bezel); background: var(--board); color: var(--ink); border-radius: 10px; padding: 7px 10px; font: 12px var(--font-body); }
+.wall-confirm { display: flex; justify-content: center; gap: 8px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -182,6 +183,10 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <div class="player red" id="p-red"><span class="pips" id="pips-red"></span><span id="name-red">CPU</span><span class="dot"></span><span class="turn"></span></div>
   </div>
   <p class="status" id="status"></p>
+  <div class="wall-confirm" id="wall-confirm" hidden>
+    <button id="place-wall" class="btn primary" type="button">Place wall</button>
+    <button id="cancel-wall" class="btn" type="button">Cancel</button>
+  </div>
 </div>
 
 <script>
@@ -631,7 +636,7 @@ function hit(ev) {
   const rect = cv.getBoundingClientRect();
   const fx = (ev.clientX - rect.left - PAD) / S, fy = (ev.clientY - rect.top - PAD) / S;
   if (fx < 0 || fy < 0 || fx > COLS || fy > ROWS) return null;
-  const dx = Math.abs(fx - Math.round(fx)), dy = Math.abs(fy - Math.round(fy)), th = 0.2;
+  const dx = Math.abs(fx - Math.round(fx)), dy = Math.abs(fy - Math.round(fy)), th = ev.pointerType === "mouse" ? 0.2 : 0.32;
   if (dy < th && dy <= dx) {
     const cv_ = Math.min(COLS - 1, Math.max(1, Math.round(fx)));
     const w = { o: "h", r: Math.round(fy), c: cv_ - 1 };
@@ -643,26 +648,35 @@ function hit(ev) {
   }
   return { type: "cell", r: Math.min(ROWS - 1, Math.floor(fy)), c: Math.min(COLS - 1, Math.floor(fx)) };
 }
-const sameHover = (a, b) => a && b && a.type === b.type &&
-  (a.type === "cell" ? a.r === b.r && a.c === b.c : wallKey(a.w) === wallKey(b.w));
-
 cv.addEventListener("pointermove", ev => { if (ev.pointerType === "mouse") { hover = hit(ev); } });
-cv.addEventListener("pointerleave", () => { hover = null; });
+// Touch screens fire pointerleave when the finger lifts, so only a mouse clears the preview here.
+cv.addEventListener("pointerleave", ev => { if (ev.pointerType === "mouse") hover = null; });
 cv.addEventListener("pointerdown", ev => {
   if (!humanTurn()) return;
   const h = hit(ev);
   if (!h) return;
+  const touch = ev.pointerType !== "mouse";
+  // On touch, the first tap previews a wall; a second tap on the preview (or the Place wall button) builds it.
+  if (touch && hover && hover.type === "wall" && nearWall(ev, hover.w)) { placeWall(hover.w); return; }
   if (h.type === "cell") {
     const ok = legalMoves(state, state.turn).some(m => m.r === h.r && m.c === h.c);
     if (ok) doMove({ r: h.r, c: h.c }); else { hover = null; setStatus(); }
     return;
   }
-  // On touch, the first tap previews a wall and a second tap on the same spot places it.
-  if (ev.pointerType !== "mouse" && !sameHover(hover, h)) { hover = h; setStatus(); return; }
-  const problem = wallProblem(state, h.w);
-  if (problem) { hover = h; setStatus(problem); return; }
-  doWall({ ...h.w, p: state.turn });
+  if (touch) { hover = { ...h, touch: true }; setStatus(wallProblem(state, h.w)); return; }
+  placeWall(h.w);
 });
+function nearWall(ev, w) {
+  const rect = cv.getBoundingClientRect();
+  const fx = (ev.clientX - rect.left - PAD) / S, fy = (ev.clientY - rect.top - PAD) / S;
+  if (w.o === "h") return fx > w.c - 0.15 && fx < w.c + 2.15 && Math.abs(fy - w.r) < 0.38;
+  return fy > w.r - 0.15 && fy < w.r + 2.15 && Math.abs(fx - w.c) < 0.38;
+}
+function placeWall(w) {
+  const problem = wallProblem(state, w);
+  if (problem) { setStatus(problem); return; }
+  doWall({ ...w, p: state.turn });
+}
 window.addEventListener("keydown", ev => {
   const k = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[ev.key];
   if (!k || !humanTurn()) return;
@@ -683,6 +697,7 @@ function names() {
 }
 function setStatus(msg) {
   const n = names(), el = $("status");
+  $("wall-confirm").hidden = !(hover && hover.touch && hover.type === "wall" && humanTurn());
   if (state.winner && mode === "online") {
     el.textContent = state.winner === online.role ? "You crossed the finish line first." : "Your friend crossed the finish line first.";
     return;
@@ -704,13 +719,13 @@ function setStatus(msg) {
     else {
       el.textContent = "";
       const b = document.createElement("strong"); b.textContent = "Your move.";
-      el.append(b, hover && hover.type === "wall" ? " Tap the same spot again to drop the wall." : " Step one square, or drop a wall on a grid line to block.");
+      el.append(b, hover && hover.type === "wall" ? " Tap the wall again, or press Place wall." : " Step one square, or drop a wall on a grid line to block.");
     }
     return;
   }
   if (mode === "cpu" && state.turn === "red") { el.textContent = "CPU is thinking…"; return; }
   const who = mode === "cpu" ? "Your move" : `${n[state.turn]}'s move`;
-  const touchHint = hover && hover.type === "wall" ? "Tap the same spot again to drop the wall." :
+  const touchHint = hover && hover.type === "wall" ? "Tap the wall again, or press Place wall." :
     "Step one square, or drop a wall on a grid line to block.";
   el.innerHTML = `<strong>${who}.</strong> ${touchHint}`;
 }
@@ -766,6 +781,8 @@ $("create").onclick = () => hostGame();
 $("join-form").addEventListener("submit", ev => { ev.preventDefault(); joinGame($("join-code").value); });
 $("copy-link").onclick = copyLink;
 $("leave").onclick = leaveGame;
+$("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTurn()) placeWall(hover.w); };
+$("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
 $("again").onclick = () => (mode === "online" ? rematch() : newGame());
 $("undo").onclick = () => {
