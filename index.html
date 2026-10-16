@@ -189,6 +189,20 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .coach-hint { margin: 0; font-weight: 700; font-size: 14px; color: var(--red); }
 .coach-reward { justify-self: center; }
 .tile:disabled { opacity: 0.45; cursor: default; }
+/* Match view: once both players are in, everything but the game steps aside. */
+.match-bar { display: none; }
+body.match .match-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+body.match header, body.match .variant-row, body.match #gamebar, body.match #rivalry, body.match .version,
+body.match #nudge, body.match #invite, body.match #lobby { display: none !important; }
+body.match .app { gap: 10px; }
+.match-mode { font: 700 11px var(--font-body); letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+.match-score { flex: 1; text-align: center; font-weight: 700; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-bar .btn { padding: 6px 12px; }
+.countdown { position: absolute; inset: 10px; border-radius: 14px; display: grid; place-items: center; background: color-mix(in srgb, var(--board) 55%, transparent); pointer-events: none; }
+.countdown span { font-family: var(--font-display); font-weight: 700; font-size: 104px; color: var(--ink); animation: pop 0.8s ease-out both; }
+.countdown span.go { color: var(--finish); font-size: 80px; }
+@keyframes pop { 0% { transform: scale(1.6); opacity: 0; } 25% { transform: scale(1); opacity: 1; } 80% { opacity: 1; } 100% { transform: scale(0.85); opacity: 0.2; } }
+@media (prefers-reduced-motion: reduce) { .countdown span { animation: none; } }
 .nudge-wrap { display: grid; justify-items: center; gap: 4px; }
 .nudge { background: var(--ink); color: var(--bg); border-radius: 18px; padding: 14px 16px; display: grid; gap: 10px; text-align: center; max-width: 340px; box-shadow: 0 16px 34px -16px var(--shadow); }
 .nudge p { margin: 0; font-weight: 700; font-size: 15px; line-height: 1.4; text-wrap: balance; }
@@ -216,6 +230,12 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
       <button id="new" class="btn" type="button">New game</button>
     </div>
   </header>
+
+  <div class="match-bar" id="match-bar">
+    <span class="match-mode" id="match-mode">Race</span>
+    <span class="match-score" id="match-score"></span>
+    <button id="match-leave" class="btn" type="button">Leave</button>
+  </div>
 
   <div class="invite-banner" id="invite" role="status" hidden>
     <span id="invite-text"></span>
@@ -322,6 +342,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 
   <div class="bezel" id="bezel">
     <canvas id="board" aria-label="Wall Rush board. Use arrow keys to move your ball."></canvas>
+    <div class="countdown" id="countdown" hidden><span id="countdown-num">3</span></div>
     <div class="overlay" id="overlay" hidden>
       <div class="card">
         <div class="who" id="win-who">Blue wins</div>
@@ -356,7 +377,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     </div>
     <svg class="nudge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15"/><path d="M5 12l7 7 7-7"/></svg>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 10</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 11</p>
 </div>
 
 <script>
@@ -562,6 +583,7 @@ function humanTurn() {
   if (mode === "tutorial") return !!tut && !tut.won && !tut.reward && state.turn === "blue";
   if (mode === "online") {
     const g = online.game;
+    if (countdown) return false; // nobody moves until "Go!"
     return !!(g && online.role && g.players.blue && g.players.red && state.turn === online.role);
   }
   return mode === "pvp" || state.turn === "blue";
@@ -613,9 +635,13 @@ saveJSON("wallrush-profile", profile);
 let records = loadJSON("wallrush-records", {});
 const pairKey = (a, b) => [a, b].sort().join("-");
 const recTopic = key => `${T}/r/${key}`;
-function tally(rec, me) {
+// Face-off results are stored with a "-f" on the end of the game key, so each mode keeps its own score.
+// (Games from before this change have no marker and count as Race.)
+const isFaceoffKey = k => k.endsWith("-f");
+function tally(rec, me, v = "race") {
   let mine = 0, theirs = 0;
-  for (const w of Object.values((rec && rec.results) || {})) w === me ? mine++ : theirs++;
+  for (const [k, w] of Object.entries((rec && rec.results) || {}))
+    if (isFaceoffKey(k) === (v === "faceoff")) w === me ? mine++ : theirs++;
   return { mine, theirs };
 }
 // Results are keyed by game, so merging copies from both players never double counts.
@@ -624,7 +650,7 @@ function mergeRecord(key, inc) {
   const cur = records[key] || { ids, names: {}, results: {} };
   let changed = !records[key];
   for (const [k, w] of Object.entries(inc.results || {}))
-    if (!(k in cur.results) && ids.includes(w) && /^[A-Z0-9]{5}-\d{1,4}$/.test(k)) { cur.results[k] = w; changed = true; }
+    if (!(k in cur.results) && ids.includes(w) && /^[A-Z0-9]{5}-\d{1,4}(-f)?$/.test(k)) { cur.results[k] = w; changed = true; }
   for (const [id, n] of Object.entries(inc.names || {}))
     if (ids.includes(id) && cleanName(n) && cur.names[id] !== cleanName(n)) { cur.names[id] = cleanName(n); changed = true; }
   records[key] = cur;
@@ -639,7 +665,8 @@ function syncRecord(g) {
   const a = g.players.blue, b = g.players.red, me = online.me;
   if (!a || !b || (a !== me && b !== me)) return;
   const key = pairKey(a, b);
-  const results = g.state.winner ? { [`${g.code}-${g.round || 1}`]: g.players[g.state.winner] } : {};
+  const gameKey = `${g.code}-${g.round || 1}${g.state.variant === "faceoff" ? "-f" : ""}`;
+  const results = g.state.winner ? { [gameKey]: g.players[g.state.winner] } : {};
   if (mergeRecord(key, { names: g.names || {}, results }) && g.state.winner) shareRecord(key);
   if (online.client && !watchingRec.has(key)) { watchingRec.add(key); online.client.subscribe(recTopic(key), { qos: 1 }); }
 }
@@ -656,8 +683,9 @@ function rivalryText() {
   if (!g || !online.role) return "";
   const them = g.players[other(online.role)];
   if (!them) return "";
-  const { mine, theirs } = tally(records[pairKey(online.me, them)], online.me);
-  return mine + theirs ? `Head to head: You ${mine} – ${theirs} ${nameFor(them)}` : `First game against ${nameFor(them)}. Good luck!`;
+  const v = g.state.variant === "faceoff" ? "faceoff" : "race", label = v === "faceoff" ? "Face-off" : "Race";
+  const { mine, theirs } = tally(records[pairKey(online.me, them)], online.me, v);
+  return mine + theirs ? `${label}: You ${mine} – ${theirs} ${nameFor(them)}` : `First ${label} game against ${nameFor(them)}. Good luck!`;
 }
 function lobbyMsg(text) { $("lobby-msg").textContent = text || ""; }
 function genCode() {
@@ -872,14 +900,16 @@ function renderLobby() {
   const me = profile.id;
   const list = Object.values(records).filter(r => r.ids && r.ids.includes(me)).map(r => {
     const them = r.ids.find(i => i !== me);
-    return { id: them, name: r.names[them] || "Friend", ...tally(r, me) };
-  }).filter(x => x.mine + x.theirs > 0).sort((a, b) => (b.mine + b.theirs) - (a.mine + a.theirs)).slice(0, 8);
+    const race = tally(r, me, "race"), face = tally(r, me, "faceoff");
+    return { id: them, name: r.names[them] || "Friend", race, face, total: race.mine + race.theirs + face.mine + face.theirs };
+  }).filter(x => x.total > 0).sort((a, b) => b.total - a.total).slice(0, 8);
   $("rivals-card").hidden = !list.length;
   $("rivals").replaceChildren(...list.map(x => {
     const li = document.createElement("li");
     const who = document.createElement("span"); who.className = "who"; who.textContent = x.name;
     const sc = document.createElement("span"); sc.className = "score";
-    sc.textContent = `You ${x.mine} – ${x.theirs}`;
+    const part = (label, t) => (t.mine + t.theirs ? `${label} ${t.mine}–${t.theirs}` : "");
+    sc.textContent = "You: " + [part("Race", x.race), part("Face-off", x.face)].filter(Boolean).join(" · ");
     const inv = document.createElement("button"); inv.className = "btn"; inv.type = "button"; inv.textContent = "Invite";
     inv.onclick = () => inviteRival(x.id, x.name);
     const info = document.createElement("div"); info.className = "info"; info.append(who, sc);
@@ -1230,7 +1260,7 @@ function readColors() {
 function resize() {
   const app = document.querySelector(".app");
   const availW = app.clientWidth - 20;
-  const availH = Math.max(320, window.innerHeight - 260);
+  const availH = Math.max(320, window.innerHeight - (document.body.classList.contains("match") ? 150 : 260));
   S = Math.floor(Math.min(availW / COLS, availH / ROWS, 46));
   PAD = Math.round(S * 0.18);
   W = S * COLS + PAD * 2; H = S * ROWS + PAD * 2;
@@ -1246,7 +1276,7 @@ function wallRect(w) {
   return { x: PAD + w.c * S - t / 2, y: PAD + w.r * S + inset, w: t, h: 2 * S - 2 * inset };
 }
 function drawWall(w, color, hi, alpha = 1, scale = 1) {
-  const b = wallRect(w);
+  const b = wallRect(flipWall(w));
   ctx.save();
   ctx.globalAlpha = alpha;
   const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
@@ -1358,6 +1388,15 @@ function drawTop(g, x, y, R, look, col) {
   }
 }
 const ease = t => 1 - Math.pow(1 - t, 3);
+// In an online Face-off game the red player sees the board turned around, so both players start at the
+// bottom of their own screen. These convert between the shared board and what this screen shows.
+const flipped = () => mode === "online" && state.variant === "faceoff" && online.role === "red";
+const vR = r => (flipped() ? ROWS - 1 - r : r), vC = c => (flipped() ? COLS - 1 - c : c);
+// A wall turned around (the same conversion works in both directions).
+function flipWall(w) {
+  if (!flipped()) return w;
+  return w.o === "h" ? { ...w, r: ROWS - w.r, c: COLS - 2 - w.c } : { ...w, r: ROWS - 2 - w.r, c: COLS - w.c };
+}
 function ballXY(p, now) {
   const to = state.pos[p];
   let r = to.r, c = to.c;
@@ -1367,7 +1406,7 @@ function ballXY(p, now) {
     r = a.from.r + (to.r - a.from.r) * ease(t); c = a.from.c + (to.c - a.from.c) * ease(t);
     if (t >= 1) anim[p] = null;
   }
-  let x = PAD + (c + 0.5) * S, y = PAD + (r + 0.5) * S;
+  let x = PAD + (vC(c) + 0.5) * S, y = PAD + (vR(r) + 0.5) * S;
   if (state.pos.blue.r === state.pos.red.r && state.pos.blue.c === state.pos.red.c)
     x += (p === "blue" ? -1 : 1) * S * 0.16;
   return { x, y };
@@ -1385,7 +1424,7 @@ function draw(now) {
   };
   if (state.variant === "faceoff") {
     const cb = seatColor("blue").base, cr = seatColor("red").base;
-    band(0, hexA(cb, 0.22), cb); band(ROWS - 1, hexA(cr, 0.22), cr);
+    band(vR(0), hexA(cb, 0.22), cb); band(vR(ROWS - 1), hexA(cr, 0.22), cr);
   } else band(0, colors["finish-tint"], colors.finish);
   // grid
   ctx.strokeStyle = colors.grid; ctx.lineWidth = 1;
@@ -1398,11 +1437,11 @@ function draw(now) {
   if (humanTurn()) {
     const p = state.turn, col = seatColor(p).base, pulse = reduceMotion ? 1 : 0.75 + 0.25 * Math.sin(now / 260);
     for (const m of legalMoves(state, p)) {
-      const x = PAD + (m.c + 0.5) * S, y = PAD + (m.r + 0.5) * S;
+      const x = PAD + (vC(m.c) + 0.5) * S, y = PAD + (vR(m.r) + 0.5) * S;
       const isHover = hover && hover.type === "cell" && hover.r === m.r && hover.c === m.c;
       const isPress = press && !press.off && press.r === m.r && press.c === m.c;
       ctx.fillStyle = col; ctx.globalAlpha = isPress ? 0.3 : isHover ? 0.24 : 0.14;
-      rr(PAD + m.c * S + S * 0.07, PAD + m.r * S + S * 0.07, S * 0.86, S * 0.86, S * 0.18); ctx.fill();
+      rr(PAD + vC(m.c) * S + S * 0.07, PAD + vR(m.r) * S + S * 0.07, S * 0.86, S * 0.86, S * 0.18); ctx.fill();
       ctx.globalAlpha = 0.35; ctx.beginPath(); ctx.arc(x, y, S * 0.09 * pulse, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
       if (isPress) { ctx.save(); ctx.globalAlpha = 0.5; drawBallOn(ctx, x, y, S * 0.3, seatLook(p)); ctx.restore(); }
@@ -1456,6 +1495,11 @@ function drawConfetti(now) {
 // A finger pressing on a square you can move to. The move happens when the finger lifts on the same square.
 let press = null;
 function hit(ev) {
+  const h = hitOnScreen(ev);
+  if (!h) return null;
+  return h.type === "wall" ? { type: "wall", w: flipWall(h.w) } : { type: "cell", r: vR(h.r), c: vC(h.c) };
+}
+function hitOnScreen(ev) {
   const rect = cv.getBoundingClientRect();
   const fx = (ev.clientX - rect.left - PAD) / S, fy = (ev.clientY - rect.top - PAD) / S;
   if (fx < 0 || fy < 0 || fx > COLS || fy > ROWS) return null;
@@ -1475,6 +1519,7 @@ cv.addEventListener("pointermove", ev => { if (ev.pointerType === "mouse") { hov
 // Touch screens fire pointerleave when the finger lifts, so only a mouse clears the preview here.
 cv.addEventListener("pointerleave", ev => { if (ev.pointerType === "mouse") hover = null; });
 cv.addEventListener("pointerdown", ev => {
+  if (matchOn()) tryFullscreen();
   if (!humanTurn()) return;
   const h = hit(ev);
   if (!h) return;
@@ -1511,7 +1556,7 @@ function cellAt(ev) {
   const fx = (ev.clientX - rect.left - PAD) / S, fy = (ev.clientY - rect.top - PAD) / S;
   if (fx < 0 || fy < 0 || fx >= COLS || fy >= ROWS) return null;
   const r = Math.floor(fy), c = Math.floor(fx);
-  return { r, c, edge: Math.min(fx - c, c + 1 - fx, fy - r, r + 1 - fy) };
+  return { r: vR(r), c: vC(c), edge: Math.min(fx - c, c + 1 - fx, fy - r, r + 1 - fy) };
 }
 function placeWall(w) {
   const problem = wallProblem(state, w);
@@ -1519,8 +1564,9 @@ function placeWall(w) {
   doWall({ ...w, p: state.turn });
 }
 window.addEventListener("keydown", ev => {
-  const k = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[ev.key];
+  let k = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[ev.key];
   if (!k || !humanTurn()) return;
+  if (flipped()) k = [-k[0], -k[1]]; // arrows follow what's on screen
   ev.preventDefault();
   const { r, c } = state.pos[state.turn];
   if (canStep(blockedSet(state.walls), r, c, k[0], k[1])) doMove({ r: r + k[0], c: c + k[1] });
@@ -1578,9 +1624,59 @@ function setStatus(msg) {
     faceoffStart() ? "Face-off: race to the far side. Your finish line is in your color." : "Step one square, or drop a wall on a grid line to block.";
   el.innerHTML = `<strong>${who}.</strong> ${touchHint}`;
 }
+// Match view: when both players are seated, hide the home screen and count down 3-2-1 before each round.
+let countdown = null, matchShown = false;
+const countdownDone = new Set();
+const matchOn = () => {
+  const g = online.game;
+  return mode === "online" && screen === "game" && !!online.code && !!online.role && !!g && !!g.players.blue && !!g.players.red;
+};
+const atStart = s => !s.winner && !s.walls.length && JSON.stringify(s.pos) === JSON.stringify(freshState(s.variant || "race").pos);
+function maybeCountdown() {
+  const g = online.game;
+  if (!matchOn() || !atStart(state)) return;
+  const key = `${g.code}-${g.round || 1}`;
+  if (countdownDone.has(key) || (countdown && countdown.key === key)) return;
+  countdown = { key, n: 3 };
+  tryFullscreen();
+  const tick = () => {
+    if (!countdown) return;
+    const el = $("countdown-num");
+    el.textContent = countdown.n > 0 ? countdown.n : "Go!";
+    el.classList.toggle("go", countdown.n === 0);
+    el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
+    countdown.timer = setTimeout(() => {
+      if (!countdown) return;
+      if (countdown.n > 0) { countdown.n--; tick(); }
+      else { countdownDone.add(countdown.key); countdown = null; render(); }
+    }, countdown.n > 0 ? 800 : 600);
+  };
+  render(); tick();
+}
+function tryFullscreen() {
+  const el = document.documentElement;
+  if (document.fullscreenElement || !el.requestFullscreen || isStandalone()) return;
+  try { el.requestFullscreen().catch(() => {}); } catch (e) {}
+}
+function exitFullscreen() {
+  if (document.fullscreenElement && document.exitFullscreen) try { document.exitFullscreen().catch(() => {}); } catch (e) {}
+}
 function render() {
   const naming = screen !== "game", tutor = mode === "tutorial" && !naming;
   const on = mode === "online" && !naming, inGame = on && !!online.code;
+  const inMatch = matchOn();
+  if (inMatch !== matchShown) {
+    matchShown = inMatch;
+    document.body.classList.toggle("match", inMatch);
+    if (!inMatch) { exitFullscreen(); if (countdown) { clearTimeout(countdown.timer); countdown = null; } }
+    resize(); window.scrollTo(0, 0);
+  }
+  if (inMatch) {
+    const v = state.variant === "faceoff";
+    $("match-mode").textContent = v ? "Face-off" : "Race";
+    $("match-score").textContent = rivalryText().replace(/^(Race|Face-off): /, "");
+  }
+  $("countdown").hidden = !countdown;
   if (state.winner && mode !== "tutorial") { if (!finishSeen) { finishSeen = true; setTimeout(maybeNudge, 1500); } }
   else finishSeen = false;
   $("nudge").hidden = !nudgeOn || naming;
@@ -1611,10 +1707,12 @@ function render() {
   if (on && !inGame) renderLobby();
   const n = names();
   const finishFor = p => (n[p] === "You" ? "Your finish" : `${n[p]}'s finish`);
-  $("finish-top-text").textContent = face ? finishFor("blue") : "Finish";
-  $("finish-label").style.color = face ? seatColor("blue").base : "";
-  $("finish-bottom-text").textContent = finishFor("red");
-  $("finish-label-bottom").style.color = seatColor("red").base;
+  // In Face-off the line at the top of this screen belongs to whoever starts at the bottom of it.
+  const topSeat = flipped() ? "red" : "blue";
+  $("finish-top-text").textContent = face ? finishFor(topSeat) : "Finish";
+  $("finish-label").style.color = face ? seatColor(topSeat).base : "";
+  $("finish-bottom-text").textContent = finishFor(other(topSeat));
+  $("finish-label-bottom").style.color = seatColor(other(topSeat)).base;
   for (const p of ["blue", "red"]) {
     $("name-" + p).textContent = n[p];
     $("p-" + p).classList.toggle("active", !state.winner && state.turn === p);
@@ -1649,6 +1747,7 @@ function render() {
     $("win-sub").textContent = mode === "online" && rv ? rv : `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
   }
   setStatus();
+  if (inMatch && !countdown) maybeCountdown();
 }
 function newGame() {
   clearTimeout(cpuTimer);
@@ -1682,6 +1781,7 @@ $("create").onclick = () => hostGame();
 $("join-form").addEventListener("submit", ev => { ev.preventDefault(); joinGame($("join-code").value); });
 $("copy-link").onclick = copyLink;
 $("leave").onclick = leaveGame;
+$("match-leave").onclick = () => (state.winner ? leaveAfterGame() : leaveGame());
 $("coach-next").onclick = nextLesson;
 $("coach-keep").onclick = () => finishTutorial(true);
 $("how-to").onclick = startTutorial;
