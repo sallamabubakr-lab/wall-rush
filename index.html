@@ -189,13 +189,6 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 .coach-hint { margin: 0; font-weight: 700; font-size: 14px; color: var(--red); }
 .coach-reward { justify-self: center; }
 .tile:disabled { opacity: 0.45; cursor: default; }
-.undo-bar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; display: flex; justify-content: center; align-items: center; gap: 12px;
-  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); font-weight: 700;
-}
-.undo-bar .btn { background: var(--bg); color: var(--ink); border-color: var(--bg); font-size: 15px; padding: 10px 20px; }
-.undo-bar i { position: absolute; left: 0; top: 0; height: 3px; background: var(--finish); width: 100%; animation: drain 1.5s linear forwards; }
-@keyframes drain { to { width: 0; } }
 .nudge-wrap { display: grid; justify-items: center; gap: 4px; }
 .nudge { background: var(--ink); color: var(--bg); border-radius: 18px; padding: 14px 16px; display: grid; gap: 10px; text-align: center; max-width: 340px; box-shadow: 0 16px 34px -16px var(--shadow); }
 .nudge p { margin: 0; font-weight: 700; font-size: 15px; line-height: 1.4; text-wrap: balance; }
@@ -220,7 +213,6 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
         <button id="mode-online" type="button" aria-pressed="false">Online</button>
       </div>
       <button id="my-ball" class="btn" type="button"><span class="ball-dot" id="my-ball-dot"></span>My ball</button>
-      <button id="undo" class="btn" type="button">Undo</button>
       <button id="new" class="btn" type="button">New game</button>
     </div>
   </header>
@@ -350,11 +342,6 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <div class="player red" id="p-red"><span class="pips" id="pips-red"></span><span id="name-red">CPU</span><span class="dot"></span><span class="turn"></span></div>
   </div>
   <p class="status" id="status"></p>
-  <div class="undo-bar" id="undo-bar" hidden>
-    <i id="undo-drain"></i>
-    <span>Sending your move…</span>
-    <button id="undo-move" class="btn" type="button">Undo</button>
-  </div>
   <div class="wall-confirm" id="wall-confirm" hidden>
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
@@ -369,7 +356,7 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     </div>
     <svg class="nudge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15"/><path d="M5 12l7 7 7-7"/></svg>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 9</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 10</p>
 </div>
 
 <script>
@@ -466,7 +453,7 @@ function legalMoves(s, p) {
 function commit(next) {
   if (!next.winner) next.turn = other(state.turn);
   if (mode === "tutorial") { next.turn = "blue"; next.winner = null; state = next; hover = null; render(); tutorialEvent(); return; }
-  if (mode === "online") { const prev = state; state = next; hover = null; pushOnline(next, prev); render(); return; }
+  if (mode === "online") { state = next; hover = null; pushOnline(next); render(); return; }
   history.push(state);
   state = next;
   hover = null;
@@ -492,34 +479,75 @@ function doWall(w) {
 const wallKey = w => `${w.o}${w.r},${w.c}`;
 
 /* ---------- CPU ---------- */
-function cpuTurn(s) {
-  const me = "red", op = "blue";
-  const gMe = goalRow(s, me), gOp = goalRow(s, op);
-  const bs = blockedSet(s.walls), d = distMap(bs, gMe), dOp = gOp === gMe ? d : distMap(bs, gOp);
-  const myD = d[s.pos[me].r][s.pos[me].c], opD = dOp[s.pos[op].r][s.pos[op].c];
-  const step = () => {
-    const opts = legalMoves(s, me).sort((a, b) => d[a.r][a.c] - d[b.r][b.c]);
-    const best = opts.filter(o => d[o.r][o.c] === d[opts[0].r][opts[0].c]);
-    return { type: "move", to: best[Math.floor(Math.random() * best.length)] };
-  };
-  if (myD <= 1 || s.left[me] === 0) return step();
-
-  let best = null;
-  for (const o of ["h", "v"]) for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const w = { o, r, c };
-    if (!wallInBounds(w) || wallConflicts(s.walls, w)) continue;
-    const b2 = blockedSet([...s.walls, w]), d2 = distMap(b2, gMe), dOp2 = gOp === gMe ? d2 : distMap(b2, gOp);
-    const op2 = dOp2[s.pos[op].r][s.pos[op].c], my2 = d2[s.pos[me].r][s.pos[me].c];
-    if (op2 === Infinity || my2 === Infinity) continue;
-    const near = Math.abs(r - s.pos[op].r) + Math.abs(c - s.pos[op].c);
-    const score = (op2 - opD) - 1.15 * (my2 - myD) - near * 0.01 + Math.random() * 0.05;
-    if (!best || score > best.score) best = { w, score, gain: (op2 - opD) - (my2 - myD) };
+// The CPU looks one reply ahead: for each of its moves and useful walls, it assumes you answer with
+// your best move or your most damaging wall, and picks the option that leaves it best placed.
+function quickApply(s, p, a) {
+  const n = { ...s, pos: { blue: { ...s.pos.blue }, red: { ...s.pos.red } }, left: { ...s.left }, turn: other(p) };
+  if (a.type === "move") { n.pos[p] = a.to; if (a.to.r === goalRow(s, p)) n.winner = p; }
+  else { n.walls = [...s.walls, { ...a.w, p }]; n.left[p]--; }
+  return n;
+}
+function dists(s) {
+  const bs = blockedSet(s.walls), gb = goalRow(s, "blue"), gr = goalRow(s, "red");
+  const mb = distMap(bs, gb), mr = gr === gb ? mb : distMap(bs, gr);
+  return { blue: mb[s.pos.blue.r][s.pos.blue.c], red: mr[s.pos.red.r][s.pos.red.c], map: { blue: mb, red: mr } };
+}
+// How good a position is for `me`: being closer than the opponent, having the next turn, and walls in hand.
+function evaluate(s, me) {
+  const op = other(me);
+  if (s.winner === me) return 1000;
+  if (s.winner === op) return -1000;
+  const d = dists(s);
+  return d[op] - d[me] + (s.turn === me ? 0.5 : -0.5) + 0.12 * (s.left[me] - s.left[op]);
+}
+// Legal walls that cut a step on one of the target player's shortest routes, most damaging first.
+function blockingWalls(s, target, d) {
+  if (s.left[s.turn] <= 0) return [];
+  const map = d.map[target], seen = new Set(), cand = new Map();
+  const q = [s.pos[target]];
+  seen.add(`${s.pos[target].r},${s.pos[target].c}`);
+  const add = w => { const k = wallKey(w); if (!cand.has(k) && wallInBounds(w) && !wallConflicts(s.walls, w)) cand.set(k, w); };
+  const bs = blockedSet(s.walls);
+  for (let i = 0; i < q.length && i < 60; i++) {
+    const { r, c } = q[i];
+    for (const [dr, dc] of DIRS) {
+      if (!canStep(bs, r, c, dr, dc) || map[r + dr][c + dc] !== map[r][c] - 1) continue;
+      if (dr === -1) { add({ o: "h", r, c }); add({ o: "h", r, c: c - 1 }); }
+      else if (dr === 1) { add({ o: "h", r: r + 1, c }); add({ o: "h", r: r + 1, c: c - 1 }); }
+      else if (dc === -1) { add({ o: "v", r, c }); add({ o: "v", r: r - 1, c }); }
+      else { add({ o: "v", r, c: c + 1 }); add({ o: "v", r: r - 1, c: c + 1 }); }
+      const k = `${r + dr},${c + dc}`;
+      if (!seen.has(k)) { seen.add(k); q.push({ r: r + dr, c: c + dc }); }
+    }
   }
-  // Blue moves right after this turn, so blue wins a straight race when opD <= myD - 1.
-  const losingRace = opD <= myD - 1;
-  const urgent = opD <= 2;
-  if (best && best.gain >= 1 && (losingRace || urgent || best.gain >= 3)) return { type: "wall", w: best.w };
-  return step();
+  const out = [];
+  for (const w of cand.values()) {
+    const dd = dists(quickApply(s, s.turn, { type: "wall", w }));
+    if (dd.blue === Infinity || dd.red === Infinity) continue; // walls can't seal anyone off
+    out.push({ w, gain: dd[target] - d[target] });
+  }
+  return out.filter(x => x.gain > 0).sort((a, b) => b.gain - a.gain).map(x => x.w);
+}
+function bestReplyValue(s1, me) {
+  const op = other(me), d1 = dists(s1);
+  const replies = legalMoves(s1, op).filter(to => d1.map[op][to.r][to.c] < d1[op]).map(to => ({ type: "move", to }));
+  if (!replies.length) replies.push(...legalMoves(s1, op).map(to => ({ type: "move", to })));
+  replies.push(...blockingWalls(s1, me, d1).slice(0, 12).map(w => ({ type: "wall", w })));
+  let v = Infinity;
+  for (const b of replies) v = Math.min(v, evaluate(quickApply(s1, op, b), me));
+  return v;
+}
+function cpuTurn(s) {
+  const me = "red", op = "blue", d0 = dists(s);
+  const opts = legalMoves(s, me).map(to => ({ type: "move", to }));
+  opts.push(...blockingWalls(s, op, d0).slice(0, 24).map(w => ({ type: "wall", w })));
+  let best = null;
+  for (const a of opts) {
+    const s1 = quickApply(s, me, a);
+    const v = (s1.winner === me ? 1e4 : bestReplyValue(s1, me)) + Math.random() * 0.05;
+    if (!best || v > best.v) best = { a, v };
+  }
+  return best.a;
 }
 function scheduleCpu() {
   clearTimeout(cpuTimer);
@@ -750,8 +778,6 @@ function armJoinTimer(code) {
 }
 function onGame(g) {
   if (!validGame(g) || g.code !== online.code) return;
-  // While your move waits to be sent, hold on to newer copies instead of overwriting the move.
-  if (online.pending) { if (!online.latest || g.seq >= online.latest.seq) online.latest = g; return; }
   if (online.game && g.seq < online.game.seq) return;
   clearTimeout(online.joinTimer);
   if (invite && invite.code === g.code) clearInvite();
@@ -794,32 +820,10 @@ function claimSeat(final) {
   lobbyMsg("That game already has two players. Create your own game instead.");
   render();
 }
-// Your move shows right away but is sent after a short pause, so a misclick can be undone.
-const UNDO_MS = 1500;
-function pushOnline(next, prev) {
-  if (!online.game) return;
-  clearTimeout(online.pendingTimer);
-  online.pending = { prev };
-  online.pendingTimer = setTimeout(sendPending, UNDO_MS);
-  const drain = $("undo-drain"); drain.style.animation = "none"; void drain.offsetWidth; drain.style.animation = "";
-}
-function sendPending() {
-  if (!online.pending) return;
-  clearTimeout(online.pendingTimer);
-  online.pending = null;
-  // Build on the newest copy of the game in case names or looks changed meanwhile.
-  const base = online.latest && online.latest.seq >= online.game.seq ? online.latest : online.game;
-  online.latest = null;
-  publishGame({ ...base, seq: base.seq + 1, state, ts: Date.now() });
-  render();
-}
-function undoPending() {
-  if (!online.pending) return;
-  clearTimeout(online.pendingTimer);
-  state = online.pending.prev; online.pending = null;
-  hover = null; press = null; anim.blue = anim.red = anim.drop = null;
-  const later = online.latest; online.latest = null;
-  if (later) onGame(later); else render();
+function pushOnline(next) {
+  const g = online.game;
+  if (!g) return;
+  publishGame({ ...g, seq: g.seq + 1, state: next, ts: Date.now() });
 }
 function rematch() {
   if (!online.game) return;
@@ -850,7 +854,6 @@ function leaveAfterGame() {
 }
 // quiet: switching games, so keep the lobby message and don't redraw yet.
 function leaveGame(quiet) {
-  if (online.pending) sendPending();
   clearTimeout(online.joinTimer); clearTimeout(online.claimTimer);
   const g = online.game, code = online.code;
   if (online.client && code) {
@@ -928,7 +931,6 @@ setInterval(() => {
 }, 3000);
 // Phones pause background tabs. When the game comes back on screen, reconnect right away.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden" && online.pending) sendPending();
   if (document.visibilityState === "visible" && online.client && !online.client.connected) online.client.reconnect();
 });
 
@@ -1602,9 +1604,8 @@ function render() {
   $("variant-row").hidden = naming || tutor || inGame;
   $("v-race").setAttribute("aria-pressed", variant === "race"); $("v-faceoff").setAttribute("aria-pressed", variant === "faceoff");
   $("create").textContent = variant === "faceoff" ? "Create Face-off game" : "Create game";
-  $("undo-bar").hidden = !(mode === "online" && online.pending);
   document.querySelector(".players").hidden = naming || (on && !inGame);
-  $("undo").hidden = $("new").hidden = on;
+  $("new").hidden = on;
   if (inGame) $("game-code").textContent = online.code;
   if (!inGame) $("link-fallback").hidden = true;
   if (on && !inGame) renderLobby();
@@ -1622,7 +1623,6 @@ function render() {
     $("pips-" + p).innerHTML = Array.from({ length: WALLS }, (_, i) => i < state.left[p] ? `<i style="background:${sc}"></i>` : "<i></i>").join("");
     $("pips-" + p).title = `${state.left[p]} walls left`;
   }
-  $("undo").disabled = history.length === 0;
   $("overlay").hidden = !state.winner;
   if (state.winner) {
     const meWon = mode === "cpu" ? state.winner === "blue" : mode === "online" && state.winner === myColor();
@@ -1715,20 +1715,10 @@ $("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTur
 $("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
 $("again").onclick = () => (mode === "online" ? requestRematch() : newGame());
-$("undo-move").onclick = undoPending;
 $("leave-game").onclick = leaveAfterGame;
 $("my-ball").onclick = showStyle;
 $("style-save").onclick = saveStyle;
 $("style-cancel").onclick = () => { screen = "game"; render(); };
-$("undo").onclick = () => {
-  clearTimeout(cpuTimer);
-  if (!history.length) return;
-  state = history.pop();
-  // Against the CPU, rewind to the last position where it was your turn.
-  while (mode === "cpu" && state.turn === "red" && history.length) state = history.pop();
-  hover = null; anim.blue = anim.red = anim.drop = null;
-  render(); scheduleCpu();
-};
 
 new MutationObserver(readColors).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readColors);
