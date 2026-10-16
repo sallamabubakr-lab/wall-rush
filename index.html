@@ -4,7 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Wall Rush</title>
-<link rel="manifest" href="manifest.webmanifest">
+<script>
+  // iPhone starts a home screen app at the page's address only when there is no manifest. That lets
+  // a profile key travel into the app (see prepareTransfer). Other phones get the manifest.
+  (function () {
+    var u = navigator.userAgent;
+    var ios = !/Android/.test(u) && (/iPhone|iPad|iPod/.test(u) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+    if (!ios) { var l = document.createElement("link"); l.rel = "manifest"; l.href = "manifest.webmanifest"; document.head.appendChild(l); }
+  })();
+</script>
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -169,7 +177,16 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
 }
 .glyph { display: inline-block; width: 20px; height: 20px; vertical-align: -4px; margin: 0 2px; color: var(--blue); }
 .install-note { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); background: var(--board); border: 1px solid var(--bezel); border-radius: 12px; padding: 10px 12px; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.nudge-wrap { display: grid; justify-items: center; gap: 4px; }
+.nudge { background: var(--ink); color: var(--bg); border-radius: 18px; padding: 14px 16px; display: grid; gap: 10px; text-align: center; max-width: 340px; box-shadow: 0 16px 34px -16px var(--shadow); }
+.nudge p { margin: 0; font-weight: 700; font-size: 15px; line-height: 1.4; text-wrap: balance; }
+.nudge .coach-actions { justify-content: center; align-items: center; }
+.nudge .btn { background: var(--bg); color: var(--ink); border-color: var(--bg); }
+.nudge .link { color: var(--bg); }
+.nudge-arrow { width: 34px; height: 34px; color: var(--ink); animation: bob 0.9s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(7px); } }
+#add-home.glow { font-weight: 700; color: var(--ink); text-decoration: none; background: var(--finish-tint); border-radius: 6px; padding: 2px 6px; box-shadow: 0 0 0 2px var(--finish); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } .nudge-arrow { animation: none; } }
 </style>
 <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 </head>
@@ -306,7 +323,17 @@ canvas { display: block; border-radius: 14px; background: var(--board); touch-ac
     <button id="place-wall" class="btn primary" type="button">Place wall</button>
     <button id="cancel-wall" class="btn" type="button">Cancel</button>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 7</p>
+  <div class="nudge-wrap" id="nudge" hidden>
+    <div class="nudge">
+      <p>Add Wall Rush to your home screen to save your rivalries forever.</p>
+      <div class="coach-actions">
+        <button id="nudge-go" class="btn" type="button">Show me how</button>
+        <button id="nudge-close" class="link" type="button">Not now</button>
+      </div>
+    </div>
+    <svg class="nudge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15"/><path d="M5 12l7 7 7-7"/></svg>
+  </div>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 8</p>
 </div>
 
 <script>
@@ -602,6 +629,7 @@ function connect() {
     else if (online.code && topic === stateTopic(online.code)) onGame(msg);
     else if (topic.startsWith(T + "/p/")) { online.presence[topic.slice(T.length + 3)] = !!(msg && msg.online); render(); }
     else if (topic.startsWith(T + "/r/")) onRecord(topic.slice(T.length + 3), msg);
+    else if (topic.startsWith(T + "/x/")) onTransfer(topic.slice(T.length + 3), msg);
   });
   return true;
 }
@@ -803,7 +831,9 @@ async function copyLink() {
     fb.value = url; fb.hidden = false; fb.focus(); fb.select();
   }
 }
+const launchedFromInstall = () => isStandalone() && new URLSearchParams(location.search).has("x");
 function initOnline() {
+  if (launchedFromInstall()) return;
   const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
   if (!m) return;
   setMode("online");
@@ -982,9 +1012,11 @@ function renderInstall() {
   $("install-now").hidden = !deferredInstall;
   const note = $("install-note");
   note.hidden = !isIOS && isAndroid;
-  note.textContent = "On iPhone, the home screen app keeps its own name and record, separate from Safari. Set it up before you start a rivalry. When a friend sends you a link, open the app and type their game code instead.";
+  note.textContent = "Your name, ball and rivalries move over to the home screen app the first time you open it. After that, play from the app. When a friend sends you a link, open the app and tap Paste invite.";
 }
 function showInstall() {
+  nudgeOn = false; saveJSON("wallrush-nudged", true);
+  prepareTransfer();
   screen = "install";
   renderInstall();
   render();
@@ -993,6 +1025,59 @@ function showInstall() {
 function closeInstall() {
   saveJSON("wallrush-install-seen", true);
   afterSetup();
+}
+
+/* ---------- home screen nudge, and moving a profile into the app ---------- */
+let nudgeOn = false, finishSeen = false, importing = null;
+// After the first finished game in a phone browser (never inside the home screen app), point at the link once.
+function maybeNudge() {
+  if (!(isIOS || isAndroid) || isStandalone() || loadJSON("wallrush-nudged", false)) return;
+  saveJSON("wallrush-nudged", true);
+  nudgeOn = true; render();
+  const link = $("add-home"), inView = () => { const r = link.getBoundingClientRect(); return r.top >= 0 && r.bottom <= window.innerHeight; };
+  setTimeout(() => { try { link.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" }); } catch (e) {} }, 400);
+  // If a smooth scroll didn't happen, jump there.
+  setTimeout(() => { if (!inView()) try { link.scrollIntoView({ block: "center" }); } catch (e) {} }, 1400);
+}
+// iPhone gives the home screen app its own empty storage. So when the guide opens in Safari, save the
+// profile on the message server under a private key and put the key in the page address. iPhone starts
+// the app at that address, and the app imports the profile on its first launch.
+const transferTopic = key => `${T}/x/${key}`;
+function prepareTransfer() {
+  if (!isIOS || isStandalone()) return;
+  let key = loadJSON("wallrush-xkey", "");
+  if (!/^[a-z0-9]{12}$/.test(key)) {
+    key = (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8)).padEnd(12, "0");
+    saveJSON("wallrush-xkey", key);
+  }
+  try { window.history.replaceState(null, "", location.pathname + "?x=" + key); } catch (e) {}
+  if (!connect()) return;
+  const data = { v: 1, profile: { id: profile.id, name: profile.name, look: profile.look }, records, ts: Date.now() };
+  online.client.publish(transferTopic(key), JSON.stringify(data), { qos: 1, retain: true });
+}
+function startImport(key) {
+  importing = key;
+  showNameScreen();
+  $("name-msg").textContent = "Bringing over your name and rivalries…";
+  if (!connect()) return;
+  online.client.subscribe(transferTopic(key), { qos: 1 });
+  setTimeout(() => {
+    if (!importing) return;
+    importing = null;
+    if ($("name-msg").textContent.startsWith("Bringing")) $("name-msg").textContent = "";
+  }, 8000);
+}
+function onTransfer(key, msg) {
+  if (key !== importing || profile.name || !msg || !msg.profile) return;
+  const p = msg.profile;
+  if (!/^[a-z0-9]{8,16}$/.test(p.id || "") || !cleanName(p.name)) return;
+  importing = null;
+  profile.id = p.id; profile.name = cleanName(p.name); profile.look = validLook(p.look, "blue");
+  saveJSON("wallrush-profile", profile);
+  for (const [k, r] of Object.entries(msg.records && typeof msg.records === "object" ? msg.records : {}))
+    if (/^[a-z0-9]{8,16}-[a-z0-9]{8,16}$/.test(k) && r && typeof r.results === "object") mergeRecord(k, r);
+  for (const k of ["wallrush-tutorial", "wallrush-install-seen", "wallrush-nudged"]) saveJSON(k, true);
+  location.replace(location.pathname); // restart as the imported player
 }
 
 /* ---------- canvas ---------- */
@@ -1300,6 +1385,10 @@ function setStatus(msg) {
 function render() {
   const naming = screen !== "game", tutor = mode === "tutorial" && !naming;
   const on = mode === "online" && !naming, inGame = on && !!online.code;
+  if (state.winner && mode !== "tutorial") { if (!finishSeen) { finishSeen = true; setTimeout(maybeNudge, 1500); } }
+  else finishSeen = false;
+  $("nudge").hidden = !nudgeOn || naming;
+  $("add-home").classList.toggle("glow", nudgeOn && !naming);
   $("name-screen").hidden = screen !== "name";
   $("style-screen").hidden = screen !== "style";
   $("my-ball-dot").style.background = PALETTE[profile.look.color].base;
@@ -1396,6 +1485,8 @@ $("name-form").addEventListener("submit", ev => {
   afterSetup();
 });
 $("add-home").onclick = showInstall;
+$("nudge-go").onclick = showInstall;
+$("nudge-close").onclick = () => { nudgeOn = false; render(); };
 $("paste-invite").onclick = pasteInvite;
 $("invite-dismiss").onclick = clearInvite;
 $("invite-join").onclick = () => { if (!invite) return; const c = invite.code; clearInvite(); setMode("online"); joinGame(c); };
@@ -1437,9 +1528,12 @@ function start(data) {
   online.me = profile.id;
   readColors(); resize(); render(); scheduleCpu();
   requestAnimationFrame(draw);
-  const m = /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
-  if (!loadJSON("wallrush-tutorial", false)) { pendingCode = m && m[1].toUpperCase(); startTutorial(); }
-  else if (!profile.name) { pendingCode = m && m[1].toUpperCase(); showNameScreen(); }
+  const xkey = new URLSearchParams(location.search).get("x");
+  const m = launchedFromInstall() ? null : /^#([A-Za-z0-9]{5})$/.exec(location.hash || "");
+  // Someone opening the home screen app has already played in the browser, so the app skips the tutorial.
+  if (launchedFromInstall() && !profile.name && /^[a-z0-9]{12}$/.test(xkey || "")) { saveJSON("wallrush-tutorial", true); startImport(xkey); }
+  else if (!loadJSON("wallrush-tutorial", false) && !isStandalone()) { pendingCode = m && m[1].toUpperCase(); startTutorial(); }
+  else if (!profile.name) { saveJSON("wallrush-tutorial", true); pendingCode = m && m[1].toUpperCase(); showNameScreen(); }
   else { connect(); initOnline(); }
 }
 start({});
