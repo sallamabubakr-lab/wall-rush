@@ -350,6 +350,7 @@ body.match .app { gap: 10px; }
         <p class="msg" id="rematch-msg" hidden></p>
         <div class="actions">
           <button id="again" class="btn primary" type="button">Play again</button>
+          <button id="again-other" class="btn" type="button">Play Face-off</button>
           <button id="leave-game" class="btn" type="button" hidden>Leave</button>
         </div>
       </div>
@@ -377,7 +378,7 @@ body.match .app { gap: 10px; }
     </div>
     <svg class="nudge-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v15"/><path d="M5 12l7 7 7-7"/></svg>
   </div>
-  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 11</p>
+  <p class="version"><button class="link" id="how-to" type="button">How to play</button> · <button class="link" id="add-home" type="button">Add to home screen</button> · Version 12</p>
 </div>
 
 <script>
@@ -718,6 +719,7 @@ function connect() {
   c.on("connect", () => {
     online.up = true; online.upAt = Date.now();
     c.publish(presTopic(online.me), JSON.stringify({ online: true }), { qos: 1, retain: true });
+    resubscribeAll();
     render();
   });
   // A late "close" from an abandoned attempt can arrive after a new connection opens, so ask the client.
@@ -762,8 +764,21 @@ async function pasteInvite() {
   if (m) joinGame(m[1]);
   else lobbyMsg("Couldn't find a game link on your clipboard. Copy the invite link first, or type the code.");
 }
+// Requests made while a connection is still starting can be dropped, so every time the connection
+// comes up, ask again for everything this page follows.
+function resubscribeAll() {
+  const c = online.client;
+  if (!c || !c.connected) return;
+  const topics = [invTopic(online.me)];
+  if (online.code) topics.push(stateTopic(online.code));
+  for (const id of online.watching) topics.push(presTopic(id));
+  for (const k of watchingRec) topics.push(recTopic(k));
+  if (importing) topics.push(transferTopic(importing));
+  c.subscribe(topics, { qos: 1 });
+}
 function publishGame(g) {
   online.game = g;
+  online.lastPub = { g, t: Date.now() }; // resent if it doesn't come back from the server (see the watchdog)
   if (online.client) online.client.publish(stateTopic(g.code), JSON.stringify(g), { qos: 1, retain: true });
   syncRecord(g);
 }
@@ -775,7 +790,7 @@ function hostGame() {
   if (!connect()) return;
   leaveGame(true);
   const code = genCode();
-  online.code = code; online.role = "blue"; online.invited = null;
+  online.code = code; online.role = "blue"; online.invited = null; online.heardSeq = 0; online.lastPub = null;
   online.client.subscribe(stateTopic(code), { qos: 1 });
   state = freshState(); hover = null;
   publishGame({ v: 4, code, seq: 1, round: 1, players: { blue: online.me, red: null }, names: { [online.me]: profile.name }, looks: { [online.me]: profile.look }, state, ts: Date.now() });
@@ -787,7 +802,7 @@ function joinGame(raw) {
   if (!/^[A-Z0-9]{5}$/.test(code)) { lobbyMsg("Game codes are 5 letters and numbers."); return; }
   if (!connect()) return;
   leaveGame(true);
-  online.code = code; online.role = null;
+  online.code = code; online.role = null; online.heardSeq = 0; online.lastPub = null;
   state = freshState(); hover = null; setHash(code);
   online.client.subscribe(stateTopic(code), { qos: 1 });
   armJoinTimer(code);
@@ -806,6 +821,7 @@ function armJoinTimer(code) {
 }
 function onGame(g) {
   if (!validGame(g) || g.code !== online.code) return;
+  online.heardSeq = Math.max(online.heardSeq || 0, g.seq);
   if (online.game && g.seq < online.game.seq) return;
   clearTimeout(online.joinTimer);
   if (invite && invite.code === g.code) clearInvite();
@@ -853,26 +869,31 @@ function pushOnline(next) {
   if (!g) return;
   publishGame({ ...g, seq: g.seq + 1, state: next, ts: Date.now() });
 }
-function rematch() {
+const modeLabel = v => (v === "faceoff" ? "Face-off" : "Race");
+const otherMode = v => (v === "faceoff" ? "race" : "faceoff");
+// Start the next round, in the same mode or the one that was asked for.
+function rematch(v = state.variant || "race") {
   if (!online.game) return;
-  const next = freshState(state.variant || "race");
+  variant = v === "faceoff" ? "faceoff" : "race"; saveJSON("wallrush-variant", variant);
+  const next = freshState(variant);
   next.turn = state.winner ? other(state.winner) : "blue"; // whoever lost goes first
   state = next; hover = null; anim.blue = anim.red = anim.drop = null;
   const g = online.game;
   publishGame({ ...g, seq: g.seq + 1, round: (g.round || 1) + 1, rematch: null, state: next, ts: Date.now() });
   render();
 }
-// The current round's rematch request, if any: { by, round, declined }.
+// The current round's rematch request, if any: { by, round, declined, variant }.
 function rematchState() {
   const g = online.game, r = g && g.rematch;
   return r && typeof r.by === "string" && r.round === (g.round || 1) ? r : null;
 }
-function requestRematch() {
+const askedMode = r => (r && (r.variant === "faceoff" || r.variant === "race") ? r.variant : state.variant || "race");
+function requestRematch(v = state.variant || "race") {
   const g = online.game, r = rematchState();
   if (!g || !online.role) return;
-  if (r && r.by !== online.me && !r.declined) { rematch(); return; } // they asked first, so this accepts
+  if (r && r.by !== online.me && !r.declined) { rematch(askedMode(r)); return; } // they asked first, so this accepts
   if (r && r.by === online.me) return;
-  publishGame({ ...g, seq: g.seq + 1, rematch: { by: online.me, round: g.round || 1, declined: false }, ts: Date.now() });
+  publishGame({ ...g, seq: g.seq + 1, rematch: { by: online.me, round: g.round || 1, declined: false, variant: v }, ts: Date.now() });
   render();
 }
 function leaveAfterGame() {
@@ -889,7 +910,7 @@ function leaveGame(quiet) {
       publishGame({ ...g, seq: g.seq + 1, players: { ...g.players, [online.role]: null }, ts: Date.now() });
     online.client.unsubscribe(stateTopic(code));
   }
-  online.code = null; online.role = null; online.game = null;
+  online.code = null; online.role = null; online.game = null; online.heardSeq = 0; online.lastPub = null;
   if (quiet === true) return;
   setHash("");
   state = freshState(); hover = null;
@@ -951,7 +972,32 @@ window.addEventListener("hashchange", () => {
 setInterval(() => {
   const c = online.client, was = online.up;
   if (!c) return;
-  if (c.connected) { online.downSince = 0; online.up = true; if (!online.upAt) online.upAt = Date.now(); }
+  if (c.connected) {
+    online.downSince = 0; online.up = true; if (!online.upAt) online.upAt = Date.now();
+    // A connection can die quietly (a phone pausing the page, a network switch) while still saying it's
+    // connected. If messages sit unsent for more than 6 seconds, drop it; it reconnects and resends them.
+    const stuck = Object.keys(c.outgoing || {}).length + (c.queue || []).length;
+    if (!stuck) online.stuckSince = 0;
+    else if (!online.stuckSince) online.stuckSince = Date.now();
+    else if (Date.now() - online.stuckSince > 6000) {
+      online.stuckSince = 0;
+      try { c.stream.destroy(); } catch (e) { c.reconnect(); }
+      return;
+    }
+    // During a game, check in every 8 seconds so a dead connection is noticed even while just waiting.
+    if (online.code && Date.now() - (online.lastBeat || 0) > 8000) {
+      online.lastBeat = Date.now();
+      c.publish(presTopic(online.me), JSON.stringify({ online: true }), { qos: 1, retain: true });
+    }
+    // Our last update never came back from the server: send it again (only if nothing newer arrived).
+    const lp = online.lastPub;
+    if (lp && lp.g.code === online.code && (online.heardSeq || 0) < lp.g.seq && Date.now() - lp.t > 4000) {
+      lp.t = Date.now();
+      c.publish(stateTopic(lp.g.code), JSON.stringify(lp.g), { qos: 1, retain: true });
+    }
+    // Still waiting to hear about the game we opened: ask again.
+    if (online.code && !online.game) c.subscribe(stateTopic(online.code), { qos: 1 });
+  }
   else {
     online.up = false;
     if (!online.downSince) online.downSince = Date.now();
@@ -1731,17 +1777,20 @@ function render() {
       if (friendId) online.lastFriend = nameFor(friendId);
       const otherId = friendId || (r && typeof r.declinedBy === "string" ? r.declinedBy : null);
       const fname = otherId ? nameFor(otherId) : online.lastFriend || "Your friend";
-      let msg = "", label = "Rematch", showAgain = !!online.role;
-      if (r && r.declined && r.by === online.me) { msg = `${fname} doesn't want a rematch right now.`; showAgain = false; }
-      else if (!friendId) { msg = `${fname} left the game.`; showAgain = false; }
-      else if (r && !r.declined && r.by === online.me) { msg = `Rematch request sent. Waiting for ${fname}…`; showAgain = false; }
-      else if (r && !r.declined) { msg = `${fname} wants a rematch!`; label = "Play again"; }
+      let msg = "", label = "Rematch", showAgain = !!online.role, showOther = !!online.role;
+      const cur = state.variant || "race", asked = askedMode(r), switching = asked !== cur;
+      if (r && r.declined && r.by === online.me) { msg = `${fname} doesn't want a rematch right now.`; showAgain = showOther = false; }
+      else if (!friendId) { msg = `${fname} left the game.`; showAgain = showOther = false; }
+      else if (r && !r.declined && r.by === online.me) { msg = `${switching ? modeLabel(asked) + " rematch" : "Rematch"} request sent. Waiting for ${fname}…`; showAgain = showOther = false; }
+      else if (r && !r.declined) { msg = switching ? `${fname} wants a ${modeLabel(asked)} rematch!` : `${fname} wants a rematch!`; label = "Play again"; showOther = false; }
       $("rematch-msg").hidden = !msg; $("rematch-msg").textContent = msg;
       $("again").textContent = label; $("again").hidden = !showAgain;
+      $("again-other").textContent = `Rematch in ${modeLabel(otherMode(cur))}`; $("again-other").hidden = !showOther;
       $("leave-game").hidden = false;
     } else {
       $("rematch-msg").hidden = true;
       $("again").textContent = "Play again"; $("again").hidden = false;
+      $("again-other").textContent = `Play ${modeLabel(otherMode(state.variant || "race"))}`; $("again-other").hidden = false;
       $("leave-game").hidden = true;
     }
     $("win-sub").textContent = mode === "online" && rv ? rv : `Reached the finish with ${state.left[state.winner]} wall${state.left[state.winner] === 1 ? "" : "s"} to spare.`;
@@ -1815,6 +1864,10 @@ $("place-wall").onclick = () => { if (hover && hover.type === "wall" && humanTur
 $("cancel-wall").onclick = () => { hover = null; setStatus(); };
 $("new").onclick = newGame;
 $("again").onclick = () => (mode === "online" ? requestRematch() : newGame());
+$("again-other").onclick = () => {
+  const v = otherMode(state.variant || "race");
+  mode === "online" ? requestRematch(v) : setVariant(v);
+};
 $("leave-game").onclick = leaveAfterGame;
 $("my-ball").onclick = showStyle;
 $("style-save").onclick = saveStyle;
